@@ -1,0 +1,757 @@
+#!/usr/bin/env python3
+"""
+auto_trader.py
+
+Automated SMA watcher + Alpaca order executor (paper mode by default).
+
+Drop into your project root. Configure via the top constants or .env variables.
+
+Run:
+    source .venv/bin/activate
+    python auto_trader.py
+
+Stop with Ctrl-C. To run 24/7 use screen/systemd/docker.
+"""
+
+# use external watchlist if present
+#!/usr/bin/env python3
+"""
+auto_trader.py
+
+Automated SMA watcher + Alpaca order executor (paper mode by default).
+"""
+
+# ----------------------------
+# CONFIG LOAD, IMPORTS, SANITY
+# ----------------------------
+import os
+import time
+import math
+import json
+import logging
+from datetime import datetime, timedelta, timezone
+now = datetime.now(timezone.utc)
+from dotenv import load_dotenv
+import pandas as pd
+import yfinance as yf
+from notifier import send_slack
+
+
+# Safety / sizing overrides (add near other config constants)
+MIN_PRICE = float(os.getenv("MIN_PRICE", "5.0"))            # skip tickers cheaper than this
+MAX_NOTIONAL_PCT = float(os.getenv("MAX_NOTIONAL_PCT", "0.10"))  # max notional per trade as pct of account
+MAX_SHARES = int(os.getenv("MAX_SHARES", "1000"))          # hard cap on share count
+FLOOR_SHARES = os.getenv("FLOOR_SHARES", "int")            # "int" or "fractional"
+
+# Automatic bracket order + EOD close settings
+USE_BRACKET_ORDERS = os.getenv("USE_BRACKET_ORDERS", "True").lower() in ("true","1","yes")
+TAKE_PROFIT_PCT = float(os.getenv("TAKE_PROFIT_PCT", "0.30"))   # default 30% take profit
+STOP_PCT = float(os.getenv("STOP_PCT", "0.15"))                 # default 15% stop (you already have)
+
+
+# load .env (if exists)
+load_dotenv()
+
+# --- sanitize API base and load keys ---
+API_BASE_RAW = os.getenv("APCA_API_BASE_URL", "https://paper-api.alpaca.markets").strip()
+if "/v2" in API_BASE_RAW:
+    API_BASE = API_BASE_RAW.split("/v2")[0].rstrip("/")
+else:
+    API_BASE = API_BASE_RAW.rstrip("/")
+
+API_KEY = os.getenv("APCA_API_KEY_ID")
+API_SECRET = os.getenv("APCA_API_SECRET_KEY")
+
+# logging basic config
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logging.info(f"Using Alpaca API base: {API_BASE}")
+logging.info(f"API key present: {bool(API_KEY)}")
+
+# Try to import WATCHLIST from config.py (your file). Fallback to env string.
+try:
+    from config import WATCHLIST as WATCHLIST
+    logging.info("Loaded WATCHLIST from config.py")
+except Exception as e:
+    logging.warning("config.py not found or import failed; falling back to WATCHLIST env. Error: %s", e)
+    raw = os.getenv("WATCHLIST", "AAPL,MSFT,AMZN,NVDA,AMD,TSLA,GOOGL,META")
+    WATCHLIST = [s.strip().upper() for s in raw.split(",") if s.strip()]
+
+# Ensure WATCHLIST is a list
+if isinstance(WATCHLIST, str):
+    WATCHLIST = [s.strip().upper() for s in WATCHLIST.split(",") if s.strip()]
+elif not isinstance(WATCHLIST, (list, tuple)):
+    raise SystemExit("WATCHLIST must be a list in config.py or a comma-separated env var")
+
+logging.info("Final WATCHLIST ({} symbols): {}".format(len(WATCHLIST), WATCHLIST))
+
+# Alpaca client import (with helpful error if missing)
+try:
+    from alpaca_trade_api.rest import REST, APIError
+except ImportError:
+    raise SystemExit("Missing dependency: alpaca-trade-api. Activate your .venv and run: pip install alpaca-trade-api")
+
+# Strategy / risk settings (these will be used below)
+SMA_LEN = int(os.getenv("SMA_LEN", "20"))
+SCAN_INTERVAL_MINUTES = int(os.getenv("SCAN_INTERVAL_MINUTES", "5"))   # how often to scan
+MAX_RISK_PCT = float(os.getenv("MAX_RISK_PCT", "0.05"))  # 5% per-trade by default
+STOP_PCT = float(os.getenv("STOP_PCT", "0.06"))          # stop distance for sizing calc
+ACCOUNT_DD_LIMIT = float(os.getenv("ACCOUNT_DD_LIMIT", "0.20"))  # pause if drawdown reached
+MAX_CONCURRENT_POSITIONS = int(os.getenv("MAX_CONCURRENT_POSITIONS", "6"))
+COOLDOWN_MINUTES = int(os.getenv("COOLDOWN_MINUTES", "60"))  # don't re-enter same ticker within this window
+ORDER_TYPE = os.getenv("ORDER_TYPE", "market")  # 'market' or 'limit'
+
+LOG_CSV = os.getenv("TRADE_LOG_CSV", "auto_trade_log.csv")
+STATE_FILE = os.getenv("STATE_FILE", "auto_state.json")
+
+# quick validation
+if not API_KEY or not API_SECRET:
+    raise SystemExit("Missing Alpaca keys in .env (APCA_API_KEY_ID, APCA_API_SECRET_KEY)")
+
+# Setup Alpaca client object
+api = REST(API_KEY, API_SECRET, API_BASE, api_version='v2')
+
+SMA_LEN = int(os.getenv("SMA_LEN", "20"))
+SCAN_INTERVAL_MINUTES = int(os.getenv("SCAN_INTERVAL_MINUTES", "5"))   # how often to scan
+MAX_RISK_PCT = float(os.getenv("MAX_RISK_PCT", "0.05"))  # 5% per-trade by default
+STOP_PCT = float(os.getenv("STOP_PCT", "0.06"))          # stop distance for sizing calc
+ACCOUNT_DD_LIMIT = float(os.getenv("ACCOUNT_DD_LIMIT", "0.20"))  # pause if drawdown reached
+MAX_CONCURRENT_POSITIONS = int(os.getenv("MAX_CONCURRENT_POSITIONS", "6"))
+COOLDOWN_MINUTES = int(os.getenv("COOLDOWN_MINUTES", "60"))  # don't re-enter same ticker within this window
+ORDER_TYPE = os.getenv("ORDER_TYPE", "market")  # 'market' or 'limit'
+
+LOG_CSV = os.getenv("TRADE_LOG_CSV", "auto_trade_log.csv")
+STATE_FILE = os.getenv("STATE_FILE", "auto_state.json")
+
+# quick validation
+if not API_KEY or not API_SECRET:
+    raise SystemExit("Missing Alpaca keys in .env (APCA_API_KEY_ID, APCA_API_SECRET_KEY)")
+
+# ----------------------------
+# Setup
+# ----------------------------
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+api = REST(API_KEY, API_SECRET, API_BASE, api_version='v2')
+
+# load or init state
+if os.path.exists(STATE_FILE):
+    with open(STATE_FILE, "r") as fh:
+        state = json.load(fh)
+else:
+    state = {"last_signal": {}, "positions": {}, "peak_equity": None, "last_scan": None}
+
+# ensure log CSV
+if not os.path.exists(LOG_CSV):
+    pd.DataFrame(columns=["timestamp","ticker","action","signal_price","qty","order_id","status","notes","equity","cash"]).to_csv(LOG_CSV, index=False)
+
+# ----------------------------
+# Utility functions
+# ----------------------------
+def save_state():
+    with open(STATE_FILE, "w") as fh:
+        json.dump(state, fh, indent=2)
+
+def get_account_info():
+    acct = api.get_account()
+    return {"equity": float(acct.equity), "cash": float(acct.cash)}
+
+def update_peak_equity(equity):
+    peak = state.get("peak_equity") or equity
+    if equity > peak:
+        state["peak_equity"] = equity
+    return state["peak_equity"]
+
+def account_paused():
+    acct = get_account_info()
+    equity = acct["equity"]
+    peak = state.get("peak_equity") or equity
+    if equity > peak:
+        state["peak_equity"] = equity
+        save_state()
+        return False, 0.0
+    drawdown = (peak - equity) / peak if peak > 0 else 0.0
+    if drawdown >= ACCOUNT_DD_LIMIT:
+        return True, drawdown
+    return False, drawdown
+
+def fetch_history_yf(ticker, lookback_days=60, interval="1d"):
+    """
+    Robust wrapper around yfinance.download.
+    Returns a DataFrame with standard columns (Open, High, Low, Close, Volume, Adj Close)
+    or None if download fails or no data.
+    """
+    try:
+        # yfinance can sometimes accept a list or a string; make sure we pass a string
+        symbol = str(ticker).strip().upper()
+        # request slightly more days to ensure we have SMA window
+        df = yf.download(symbol, period=f"{lookback_days}d", interval=interval, progress=False)
+        if df is None or df.empty:
+            return None
+
+        # If columns are MultiIndex (happens when yf.download is called with lists),
+        # try to extract the per-symbol columns by taking xs on the second level if ticker present.
+        if hasattr(df.columns, "nlevels") and df.columns.nlevels > 1:
+            # Try to get columns for this ticker
+            try:
+                if symbol in df.columns.get_level_values(1):
+                    df = df.xs(symbol, axis=1, level=1)
+                else:
+                    # fallback: collapse multiindex by taking first element of tuple
+                    df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
+            except Exception:
+                df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
+
+        # Ensure we have a 'Close' column
+        if "Close" not in df.columns:
+            # try alternative names
+            possible = [c for c in df.columns if "close" in str(c).lower()]
+            if possible:
+                df = df.rename(columns={possible[0]: "Close"})
+            else:
+                return None
+
+        return df
+    except Exception as e:
+        logging.exception("YFinance download error for %s: %s", ticker, e)
+        return None
+
+
+def compute_sma_signal(ticker):
+    """
+    Compute SMA crossover signal robustly and return dict or None.
+    Uses numeric scalars for comparisons to avoid Series-vs-Series problems.
+    """
+    try:
+        df = fetch_history_yf(ticker, lookback_days=max(90, SMA_LEN*3), interval="1d")
+        if df is None or len(df) < SMA_LEN + 2:
+            return None
+
+        # compute SMA on Close
+        df = df.copy()
+        df["sma"] = df["Close"].rolling(SMA_LEN).mean()
+
+        # Ensure we have enough non-NaN SMA values at the tail
+        if df["sma"].iloc[-1] is None or pd.isna(df["sma"].iloc[-1]):
+            return None
+
+        # Extract scalar values (floats) for comparison (avoids Series comparisons)
+        try:
+            prev_close = float(df["Close"].iat[-2])
+            last_close = float(df["Close"].iat[-1])
+            prev_sma = float(df["sma"].iat[-2])
+            last_sma = float(df["sma"].iat[-1])
+        except Exception as e:
+            logging.exception("Failed to extract scalar values for %s: %s", ticker, e)
+            return None
+
+        signal = None
+        # Long signal: prev <= prev_sma and last > last_sma
+        if prev_close <= prev_sma and last_close > last_sma:
+            signal = "buy"
+        # Exit/short signal
+        elif prev_close >= prev_sma and last_close < last_sma:
+            signal = "sell"
+
+        return {
+            "ticker": str(ticker).upper(),
+            "signal": signal,
+            "price": float(last_close),
+            "sma": float(last_sma),
+            "time": str(df.index[-1].date())
+        }
+    except Exception as e:
+        logging.exception("compute_sma_signal error for %s: %s", ticker, e)
+        return None
+
+# put these config defaults near the top if not already present
+# SAFER SIZING - drop-in replacement
+MIN_PRICE = float(os.getenv("MIN_PRICE", "5.0"))
+MAX_NOTIONAL_PCT = float(os.getenv("MAX_NOTIONAL_PCT", "0.05"))
+MAX_SHARES = int(os.getenv("MAX_SHARES", "1000"))
+FLOOR_SHARES = os.getenv("FLOOR_SHARES", "int")
+DEFAULT_MAX_RISK_PCT = float(os.getenv("MAX_RISK_PCT", "0.005"))
+
+def calc_shares_for_risk(equity, risk_pct, entry_price, stop_pct):
+    try:
+        equity = float(equity)
+        entry_price = float(entry_price)
+        stop_pct = float(stop_pct)
+        risk_pct = float(risk_pct or DEFAULT_MAX_RISK_PCT)
+    except Exception:
+        return 0.0
+
+    if equity <= 0 or entry_price <= 0 or stop_pct <= 0:
+        return 0.0
+
+    if entry_price < MIN_PRICE:
+        logging.info("Skipping ticker: price %.2f < MIN_PRICE %.2f", entry_price, MIN_PRICE)
+        return 0.0
+
+    risk_dollars = equity * risk_pct
+    shares_by_risk = risk_dollars / (entry_price * stop_pct)
+    shares_by_notional = (equity * MAX_NOTIONAL_PCT) / entry_price
+    shares = min(shares_by_risk, shares_by_notional, MAX_SHARES)
+
+    if FLOOR_SHARES == "int" or entry_price >= 1.0:
+        shares = math.floor(shares)
+    else:
+        shares = math.floor(shares * 1000) / 1000.0
+
+    if shares <= 0:
+        return 0.0
+    return shares
+
+def compute_atr_stop_pct(ticker, atr_period=14, atr_multiplier=None):
+    """
+    Robust ATR-based stop percentage.
+    Returns a float stop_pct (like 0.06) or None on failure.
+    Handles yfinance MultiIndex columns, NaNs, and ensures scalar outputs.
+    """
+    try:
+        atr_multiplier = float(atr_multiplier or os.getenv("STOP_ATR_MULTIPLIER", "1.5"))
+
+        symbol = str(ticker).strip().upper()
+        df = yf.download(symbol, period="60d", interval="1d", progress=False)
+        if df is None or df.empty:
+            logging.debug("compute_atr_stop_pct: no data for %s", symbol)
+            return None
+
+        # Normalize multiindex columns if present
+        if hasattr(df.columns, "nlevels") and df.columns.nlevels > 1:
+            try:
+                if symbol in df.columns.get_level_values(1):
+                    df = df.xs(symbol, axis=1, level=1)
+                else:
+                    df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
+            except Exception:
+                df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
+
+        # Ensure required columns are present
+        if not all(col in df.columns for col in ("High", "Low", "Close")):
+            logging.debug("compute_atr_stop_pct: required columns missing for %s", symbol)
+            return None
+
+        high = df["High"].astype(float)
+        low = df["Low"].astype(float)
+        close = df["Close"].astype(float)
+
+        # True Range calculation
+        prev_close = close.shift(1)
+        tr_df = pd.concat([
+            (high - low).abs(),
+            (high - prev_close).abs(),
+            (low - prev_close).abs()
+        ], axis=1)
+        tr = tr_df.max(axis=1)
+
+        atr_series = tr.rolling(atr_period).mean()
+        if atr_series.empty or atr_series.isna().all():
+            logging.debug("compute_atr_stop_pct: ATR series empty or all NaN for %s", symbol)
+            return None
+
+        # get scalar ATR (last non-NA)
+        atr = atr_series.dropna().iloc[-1]
+        # defensive: if atr is not scalar (rare), convert
+        if isinstance(atr, (pd.Series, pd.DataFrame)):
+            try:
+                atr = float(atr.values[-1])
+            except Exception:
+                atr = float(atr.item())
+
+        last_close = close.dropna().iloc[-1]
+        # make sure last_close is scalar
+        if isinstance(last_close, (pd.Series, pd.DataFrame)):
+            try:
+                last_close = float(last_close.values[-1])
+            except Exception:
+                last_close = float(last_close.item())
+
+        # sanity checks
+        if pd.isna(atr) or pd.isna(last_close) or last_close == 0:
+            logging.debug("compute_atr_stop_pct: invalid atr/close for %s atr=%s close=%s", symbol, atr, last_close)
+            return None
+
+        stop_pct = (atr * atr_multiplier) / float(last_close)
+        # clamp to reasonable range
+        stop_pct = max(0.01, min(0.20, float(stop_pct)))
+        return stop_pct
+
+    except Exception:
+        logging.exception("compute_atr_stop_pct failed for %s", ticker)
+        return None
+
+
+
+def place_market_buy_and_attach_stops(ticker, qty, entry_price_hint=None,
+        stop_pct=None, take_profit_pct=None,
+        use_trailing=False):
+    """
+    Submit market buy, poll until filled, then create stop and TP (and optionally enable trailing logic).
+    Returns tuple(order_buy, stop_order, tp_order) (stop_order/tp_order may be None).
+    """
+    try:
+        # submit market buy
+        buy_order = api.submit_order(symbol=ticker, qty=qty, side='buy', type='market', time_in_force='day')
+    except Exception as e:
+        logging.exception("Failed initial market buy: %s", e)
+        return None, None, None
+
+    order_id = getattr(buy_order, "id", None)
+    # poll until filled (timeout ~30s)
+    filled = False
+    fill_price = None
+    poll_start = time.time()
+    while time.time() - poll_start < 30:
+        try:
+            o = api.get_order(order_id)
+            if getattr(o, "status", "") == "filled":
+                filled = True
+                # Alpaca's filled_avg_price attribute contains string price
+                fill_price = float(getattr(o, "filled_avg_price", getattr(o, "filled_avg", None) or 0))
+                break
+        except Exception:
+            logging.exception("Error polling order %s", order_id)
+        time.sleep(0.5)
+
+    if not filled:
+        logging.warning("Order %s not filled within timeout. Buy order status: %s", order_id, getattr(buy_order, "status", "unknown"))
+        # we still return the buy order; user may choose to handle later
+        return buy_order, None, None
+
+    # Use actual fill price to compute stop/tp
+    if stop_pct is None:
+        stop_pct = compute_atr_stop_pct(ticker) or float(os.getenv("STOP_PCT", "0.06"))
+    if take_profit_pct is None:
+        take_profit_pct = float(os.getenv("TAKE_PROFIT_PCT", "0.12"))
+
+    stop_price = round(fill_price * (1.0 - float(stop_pct)), 2)
+    tp_price = round(fill_price * (1.0 + float(take_profit_pct)), 2)
+
+    stop_order = None
+    tp_order = None
+    try:
+        # place stop order (market sell when triggered)
+        stop_order = api.submit_order(symbol=ticker, qty=qty, side='sell', type='stop', stop_price=str(stop_price), time_in_force='day')
+        # place take-profit (limit sell)
+        tp_order = api.submit_order(symbol=ticker, qty=qty, side='sell', type='limit', limit_price=str(tp_price), time_in_force='day')
+    except Exception as e:
+        logging.exception("Failed to submit stop/tp orders for %s after fill: %s", ticker, e)
+
+    # notify
+    try:
+        send_slack(f":white_check_mark: BUY FILLED {ticker} qty={qty} fill=${fill_price:.2f} stop=${stop_price:.2f} tp=${tp_price:.2f}")
+    except Exception:
+        pass
+
+    # if trailing is requested, record the trailing metadata in state so the main loop can update it
+    if use_trailing:
+        state["positions"][ticker] = state.get("positions", {}).get(ticker, {})
+        state["positions"][ticker].update({
+            "entry_price": fill_price,
+            "qty": qty,
+            "stop_order_id": getattr(stop_order, "id", None),
+            "tp_order_id": getattr(tp_order, "id", None),
+            "trail_active": True,
+            "trail_last_price": fill_price,  # starting point
+            "trail_anchor_price": fill_price,
+            "trail_start_pct": float(os.getenv("TRAIL_START_PCT", "0.03")),
+            "trail_step_pct": float(os.getenv("TRAIL_STEP_PCT", "0.02")),
+            "trail_max_step": float(os.getenv("TRAIL_MAX_STEP", "0.20")),
+            "last_trail_stop": stop_price
+        })
+        save_state()
+
+    return buy_order, stop_order, tp_order
+
+# Compatibility wrapper so existing code calling place_order_market_buy() still works.
+def place_order_market_buy(ticker, qty):
+    """
+    Backwards-compatible wrapper for old callers.
+    Calls the new place_market_buy_and_attach_stops and returns the buy_order object (first element).
+    """
+    try:
+        use_trailing = os.getenv("USE_TRAILING_STOP", "True").lower() in ("1", "true", "yes")
+        buy_order, stop_order, tp_order = place_market_buy_and_attach_stops(
+            ticker, qty, entry_price_hint=None, stop_pct=None, take_profit_pct=None, use_trailing=use_trailing
+        )
+        return buy_order
+    except Exception:
+        logging.exception("Compatibility wrapper place_order_market_buy failed for %s", ticker)
+        return None
+
+
+def place_order_limit_buy(ticker, qty, limit_price, stop_pct=STOP_PCT, take_profit_pct=TAKE_PROFIT_PCT, use_bracket=USE_BRACKET_ORDERS):
+    """
+    Submits a limit buy. Optionally attaches bracket stop/take-profit.
+    """
+    try:
+        if use_bracket and stop_pct:
+            stop_price = round(limit_price * (1.0 - float(stop_pct)), 2)
+            take_profit = None
+            if take_profit_pct:
+                tp_price = round(limit_price * (1.0 + float(take_profit_pct)), 2)
+                take_profit = {"limit_price": str(tp_price)}
+            stop_loss = {"stop_price": str(stop_price)}
+
+            params = {
+                "symbol": ticker,
+                "qty": qty,
+                "side": "buy",
+                "type": "limit",
+                "limit_price": str(limit_price),
+                "time_in_force": "day",
+                "order_class": "bracket",
+            }
+            if take_profit:
+                params["take_profit"] = take_profit
+            if stop_loss:
+                params["stop_loss"] = stop_loss
+
+            order = api.submit_order(**params)
+            return order
+        # fallback: plain limit buy
+        order = api.submit_order(symbol=ticker, qty=qty, side='buy', type='limit', limit_price=str(limit_price), time_in_force='day')
+        return order
+    except Exception as e:
+        logging.exception("Alpaca APIError placing limit buy for %s: %s", ticker, e)
+        return None
+
+
+def log_trade_row(row):
+    df = pd.read_csv(LOG_CSV)
+    df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+    df.to_csv(LOG_CSV, index=False)
+
+# ----------------------------
+# Main scanning / execution loop
+# ----------------------------
+def run_scan_once():
+    def update_trailing_stops():
+        """
+        Called each scan: for each state position with trail_active True,
+        check whether we can raise the stop based on new high price.
+        """
+        try:
+            for ticker, pdata in list(state.get("positions", {}).items()):
+                if not pdata.get("trail_active"):
+                    continue
+                qty = pdata.get("qty")
+                entry_price = pdata.get("entry_price")
+                if not qty or not entry_price:
+                    continue
+
+                # fetch recent minute bars to find the high since entry
+                try:
+                    df = yf.download(ticker, period="5d", interval="1m", progress=False)
+                    if df is None or df.empty:
+                        continue
+                    # only consider bars since entry_time if available
+                    # entry_time could be in pdata; fall back to last 2 days
+                    high_since = df["High"].max()
+                except Exception:
+                    logging.exception("update_trailing_stops: yfinance fail for %s", ticker)
+                    continue
+
+                trail_anchor = pdata.get("trail_anchor_price", entry_price)
+                trail_step = pdata.get("trail_step_pct", float(os.getenv("TRAIL_STEP_PCT", "0.02")))
+                last_trail_stop = pdata.get("last_trail_stop", None)
+
+                # Compute new candidate stop: we move stop to (high_since * (1 - trail_step))
+                candidate_stop = round(high_since * (1.0 - float(trail_step)), 2)
+
+                # Only raise the stop; never reduce
+                if last_trail_stop is None or candidate_stop > last_trail_stop + 0.01:
+                    # cancel existing stop order if present
+                    old_stop_id = pdata.get("stop_order_id")
+                    if old_stop_id:
+                        try:
+                            api.cancel_order(old_stop_id)
+                        except Exception:
+                            pass
+                    # submit new stop order
+                    try:
+                        new_stop = api.submit_order(symbol=ticker, qty=qty, side='sell', type='stop',
+                                                    stop_price=str(candidate_stop), time_in_force='day')
+                        # update state
+                        pdata["stop_order_id"] = getattr(new_stop, "id", None)
+                        pdata["last_trail_stop"] = candidate_stop
+                        state["positions"][ticker] = pdata
+                        save_state()
+                        send_slack(
+                            f":arrow_up: Raised stop for {ticker} to ${candidate_stop:.2f} (based on high ${high_since:.2f})")
+                    except Exception:
+                        logging.exception("Failed to submit trailing stop for %s", ticker)
+        except Exception:
+            logging.exception("update_trailing_stops: general failure")
+    # check account pause
+    paused, drawdown = account_paused()
+    if paused:
+        logging.error("Account paused due to drawdown %.2f%%", drawdown*100)
+        if paused:
+            logging.error("Account paused due to drawdown %.2f%%", drawdown * 100)
+            send_slack(f":warning: TRADING PAUSED — drawdown {drawdown:.2%}. Manual review required.")
+            return
+        return
+
+    acct = get_account_info()
+    equity = acct["equity"]
+
+    # update peak
+    update_peak_equity(equity)
+    save_state()
+
+    # get existing positions count
+    open_positions = api.list_positions()
+    open_symbols = set([p.symbol for p in open_positions])
+    if len(open_positions) >= MAX_CONCURRENT_POSITIONS:
+        logging.info("Max concurrent positions reached (%d). Skipping new entries.", MAX_CONCURRENT_POSITIONS)
+        return
+
+    def pick_top_n_signals(candidates, n=3):
+        """
+        candidates: list of dicts { 'ticker':..., 'score':..., 'price':... }
+        Sorts by score desc and returns top n tickers.
+        """
+        if not candidates:
+            return []
+        sorted_c = sorted(candidates, key=lambda x: x.get("score", 0), reverse=True)
+        return sorted_c[:n]
+
+    for ticker in WATCHLIST:
+        try:
+            ticker = ticker.strip().upper()
+            # cooldown check
+            last = state["last_signal"].get(ticker)
+            if last:
+                last_time = datetime.fromisoformat(last.get("time")) if last.get("time") else None
+                if last_time and datetime.utcnow() - last_time < timedelta(minutes=COOLDOWN_MINUTES):
+                    # skip until cooldown passes
+                    continue
+
+            res = compute_sma_signal(ticker)
+            if res is None:
+                logging.debug("No data for %s", ticker)
+                continue
+            sig = res["signal"]
+            price = res["price"]
+            logging.debug("Ticker %s signal=%s price=%.2f sma=%.2f", ticker, sig, price, res["sma"])
+
+            # if buy signal and we don't already have a position in ticker -> consider entry
+            if sig == "buy" and ticker not in open_symbols:
+                # sizing
+                qty = calc_shares_for_risk(equity, MAX_RISK_PCT, price, STOP_PCT)
+                # sanity: if qty < tiny threshold (e.g., $1 of position) skip
+                if qty <= 0 or qty * price < 1.0:
+                    logging.info("Sizing for %s returned qty=%s (insufficient). Skipping.", ticker, qty)
+                    send_slack(f":information_source: SKIPPED {ticker} — qty={qty} price=${price:.2f} (insufficient size or below MIN_PRICE).")
+                    continue
+
+                # place order
+                if ORDER_TYPE == "market":
+                    order = place_order_market_buy(ticker, qty)
+                else:
+                    order = place_order_limit_buy(ticker, qty, price)
+                order_id = getattr(order, "id", None) if order else None
+                status = getattr(order, "status", None) if order else "failed"
+                notes = ""
+                logging.info("Placed order for %s qty=%s id=%s status=%s", ticker, qty, order_id, status)
+
+                # ---- Slack alert for buy (safe) ----
+                try:
+                    notional = float(qty) * float(price)
+                    send_slack(
+                        f":rocket: Placed BUY {ticker} — qty={qty} @ ${price:.2f}  notional=${notional:,.2f}  status={status}  id={order_id}")
+                except Exception:
+                    # fallback short message if formatting or notifier fails
+                    try:
+                        send_slack(
+                            f":rocket: Placed BUY {ticker} — qty={qty} price={price} status={status} id={order_id}")
+                    except Exception:
+                        logging.debug("send_slack failed for BUY alert (swallowed).")
+                # -------------------------------------
+
+                # record state and log
+                state["last_signal"][ticker] = {"time": datetime.utcnow().isoformat(), "signal": "buy", "price": price}
+                state["positions"][ticker] = {"entry_time": datetime.utcnow().isoformat(), "qty": qty, "order_id": order_id}
+                save_state()
+
+                log_trade_row({
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "ticker": ticker,
+                    "action": "BUY",
+                    "signal_price": price,
+                    "qty": qty,
+                    "order_id": order_id,
+                    "status": status,
+                    "notes": notes,
+                    "equity": equity,
+                    "cash": acct["cash"]
+                })
+                # refresh positions and potentially throttle more entries
+                open_positions = api.list_positions()
+                open_symbols = set([p.symbol for p in open_positions])
+                if len(open_positions) >= MAX_CONCURRENT_POSITIONS:
+                    logging.info("Reached max concurrent positions after entry.")
+                    break
+
+            # if sell/exit signal and we already have position -> exit (market sell)
+            elif sig == "sell" and ticker in open_symbols:
+                # place market sell for quantity we hold
+                pos = next((p for p in open_positions if p.symbol == ticker), None)
+                if not pos:
+                    continue
+                qty = float(pos.qty)
+                try:
+                    order = api.submit_order(symbol=ticker, qty=qty, side='sell', type='market', time_in_force='day')
+                    order_id = getattr(order, "id", None)
+                    status = getattr(order, "status", None)
+                    notes = "exit signal"
+                    logging.info("Placed exit for %s qty=%s id=%s", ticker, qty, order_id)
+                    logging.info("Placed exit for %s qty=%s id=%s", ticker, qty, order_id)
+                    # Slack alert: exit placed
+                    try:
+                        send_slack(f":white_check_mark: EXIT {ticker} — qty={qty} @ ${price:.2f}  id={order_id}  status={status}")
+                    except Exception:
+                        send_slack(f":white_check_mark: EXIT {ticker} — qty={qty} id={order_id}")
+                    # clear state
+                    state["last_signal"][ticker] = {"time": datetime.utcnow().isoformat(), "signal": "sell", "price": price}
+                    state["positions"].pop(ticker, None)
+                    save_state()
+                    log_trade_row({
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "ticker": ticker,
+                        "action": "SELL",
+                        "signal_price": price,
+                        "qty": qty,
+                        "order_id": order_id,
+                        "status": status,
+                        "notes": notes,
+                        "equity": equity,
+                        "cash": acct["cash"]
+                    })
+                except Exception as e:
+                    logging.exception("Failed to place exit order %s: %s", ticker, e)
+                    continue
+
+        except Exception as e:
+            logging.exception("Error scanning %s: %s", ticker, e)
+            send_slack(f":x: Error scanning {ticker}: {e}")
+            continue
+
+def main_loop():
+    logging.info("Starting auto_trader main loop. Watchlist: %s", WATCHLIST)
+    while True:
+        try:
+            run_scan_once()
+            state["last_scan"] = datetime.utcnow().isoformat()
+            save_state()
+        except Exception as e:
+            logging.exception("Top-level error in main loop: %s", e)
+            send_slack(f":bangbang: Top-level error in auto_trader: {e}")
+        time.sleep(SCAN_INTERVAL_MINUTES * 60)
+
+if __name__ == "__main__":
+    main_loop()
+
+
+def handle_signal():
+    return None

@@ -1,0 +1,12 @@
+yfinance
+alpaca-trade-api==3.2.0
+alpaca-py
+alpha-vantage
+pandas
+numpy
+PyYAML
+requests
+python-dotenv
+ta
+watchgod
+anyio
