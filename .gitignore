@@ -137,6 +137,8 @@ celerybeat.pid
 # Environments
 .env
 .env.*
+*.disabled
+*.save.disabled
 logs/
 state/
 .venv/
