@@ -33,9 +33,34 @@ from datetime import datetime, timedelta, timezone, timezone
 now = datetime.now(timezone.utc)
 from dotenv import load_dotenv
 import pandas as pd
+from alpaca.trading.client import TradingClient
+from config import API_KEY, API_SECRET, IS_PAPER
+from executer import execute_intent
+from options.orders import OptionsTrader
 import yfinance as yf
+from risk import approve_csp_intent
+from strategies.options_csp import pick_csp_intent, exit_rules_for_csp
+from config import API_KEY, API_SECRET, IS_PAPER, ENABLE_OPTIONS, OPTIONS_UNDERLYINGS
+from alpaca.trading.client import TradingClient
+from executer import execute_intent
+from options.orders import OptionsTrader
+from options.data import OptionsData
 from notifier import send_slack
+from strategies.spreads import pick_bull_put_spread, pick_call_debit_spread
+from config import (
+    SPREADS_MAX_CANDIDATES_PER_TICK, SPREADS_MAX_RISK_PER_TRADE
+)
 from datetime import datetime, timedelta, timezone
+# init clients (global singletons ok)
+equity_trader = TradingClient(API_KEY, API_SECRET, paper=IS_PAPER)
+opt_trader    = OptionsTrader(API_KEY, API_SECRET, paper=IS_PAPER)
+od            = OptionsData(API_KEY, API_SECRET, paper=IS_PAPER)
+from config import (
+    API_KEY, API_SECRET, IS_PAPER,
+    ENABLE_OPTIONS,
+    WATCHLIST,                 # ← use your existing watchlist
+    OPTIONS_MAX_CANDIDATES_PER_TICK,
+)
 # If you use pandas timestamps anywhere:
 try:
     import pandas as pd
@@ -141,7 +166,8 @@ logging.info(f"API key present: {bool(API_KEY)}")
 
 # Try to import WATCHLIST from config.py (your file). Fallback to env string.
 try:
-    from config import WATCHLIST as WATCHLIST
+    from config import WATCHLIST as WATCHLIST, IS_PAPER
+
     logging.info("Loaded WATCHLIST from config.py")
 except Exception as e:
     logging.warning("config.py not found or import failed; falling back to WATCHLIST env. Error: %s", e)
@@ -1054,6 +1080,100 @@ def run_scan_once():
                     rsi_res = None
 
             # pick chosen result: prefer RSI+SMA when it gives a non-None signal
+            # auto_trader.py
+            from options.data import OptionsData
+            from options.orders import OptionsTrader
+            from strategies.options_cash_puts import screen_cash_secured_put
+            from config import ENABLE_OPTIONS
+
+            # init once
+            od = OptionsData(API_KEY, API_SECRET, paper=IS_PAPER)
+            opt_trader = OptionsTrader(API_KEY, API_SECRET, paper=IS_PAPER)
+
+            def run_strategies():
+                intents = []
+
+                # --- your existing EQUITY strategies here ---
+                # intents.extend(run_equity_strats(...))
+
+                # --- OPTIONS: pick CSPs from your WATCHLIST ---
+                if ENABLE_OPTIONS:
+                    # 1) Build a clean candidate list from your WATCHLIST
+                    #    - uppercase symbols
+                    #    - drop obvious non-option underlyings (crypto tickers, 1-char oddballs except 'A', etc.)
+                    wl = [s.strip().upper() for s in WATCHLIST if isinstance(s, str)]
+
+                    if ENABLE_OPTIONS:
+                        # Try a few watchlist names for a Bull Put Spread (credit, defined risk)
+                        candidates = [s.strip().upper() for s in WATCHLIST if isinstance(s, str)]
+                        candidates = candidates[:SPREADS_MAX_CANDIDATES_PER_TICK]
+                    submitted = False
+                    for u in candidates:
+                        # First, try BPS (credit spread)
+                        bps = pick_bull_put_spread(od, u)
+                        if bps and bps["risk"]["max_loss"] <= SPREADS_MAX_RISK_PER_TRADE:
+                            # TODO: you can add an account-wide open-spreads counter here if you track it
+                            intents.append(bps)
+                            submitted = True
+                            break
+                            # If no BPS opportunity, optionally try a small call debit spread
+                        if not submitted:
+                            for u in candidates:
+                                cds = pick_call_debit_spread(od, u)
+                                if cds and cds["risk"]["net_debit"] <= SPREADS_MAX_RISK_PER_TRADE:
+                                    intents.append(cds)
+                                    break
+
+                    return intents
+                    def looks_optionable(sym: str) -> bool:
+                        # quick guard: real US equities/ETFs are usually letters & digits, not crypto pairs
+                        return sym.isalnum() and len(sym) <= 5  # lets SPY, AAPL, NVDA, etc. through
+
+                    candidates = [s for s in wl if looks_optionable(s)]
+                    # Keep it tame each tick (avoid hammering APIs)
+                    candidates = candidates[
+                        :OPTIONS_MAX_CANDIDATES_PER_TICK] if "OPTIONS_MAX_CANDIDATES_PER_TICK" in globals() else candidates[
+                        :8]
+
+                    # 2) Try each until we get a valid CSP intent (liquidity/delta/DTE filters inside pick_csp_intent)
+                    for u in candidates:
+                        intent = pick_csp_intent(od, u)
+                        if not intent:
+                            continue
+
+                        # 3) Risk check (rough CSP collateral from OCC strike)
+                        sym = intent["symbol"]
+                        strike = int(sym[-8:]) / 1000.0
+                        est_bpr = strike * 100.0
+                        acct = equity_trader.get_account()
+                        open_csp_count = 0  # TODO: replace with your real count if you track it
+
+                        if approve_csp_intent(intent, acct, open_csp_count, est_bpr):
+                            intents.append(intent)
+                            break  # submit at most one options order per tick
+
+                    # 4) Fallback (optional): if nothing in watchlist qualifies, try SPY
+                    if not intents:
+                        fallback = pick_csp_intent(od, "SPY")
+                        if fallback:
+                            sym = fallback["symbol"]
+                            strike = int(sym[-8:]) / 1000.0
+                            est_bpr = strike * 100.0
+                            acct = equity_trader.get_account()
+                            if approve_csp_intent(fallback, acct, 0, est_bpr):
+                                intents.append(fallback)
+
+                return intents
+
+            # Global, singletons
+            equity_trader = TradingClient(API_KEY, API_SECRET, paper=IS_PAPER)
+            opt_trader = OptionsTrader(API_KEY, API_SECRET, paper=IS_PAPER)
+
+            def main_tick():
+                intents = run_strategies()
+                for intent in intents:
+                    execute_intent(intent, equity_trader, opt_trader)
+
             chosen = None
             strategy_name = "sma"  # default label
             if rsi_res and rsi_res.get("signal"):

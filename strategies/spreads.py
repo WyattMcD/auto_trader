@@ -1,0 +1,244 @@
+# strategies/spreads.py
+from datetime import date
+from typing import Optional, Dict, Any, List, Tuple
+from config import (
+    SPREADS_MIN_DTE, SPREADS_MAX_DTE, SPREADS_MIN_OI, SPREADS_MAX_REL_SPREAD,
+    SPREADS_TARGET_DELTA, SPREADS_MAX_RISK_PER_TRADE
+)
+
+# ---------- Helpers ----------
+def _why_no(s, reason, extra=None):
+    sym = getattr(s, "symbol", "?")
+    print(f"[spread-skip] {sym} -> {reason} {extra or ''}")
+
+def _parse_occ(sym: str):
+    """Parse OCC symbol -> (right 'C'/'P', expiry: date, strike: float)."""
+    try:
+        right = sym[-9]
+        yy, mm, dd = sym[-15:-13], sym[-13:-11], sym[-11:-9]
+        strike = int(sym[-8:]) / 1000.0
+        exp = date(int("20" + yy), int(mm), int(dd))
+        return right, exp, strike
+    except Exception:
+        return None, None, None
+
+def _has_quote(snap) -> bool:
+    q = getattr(snap, "latest_quote", None)
+    return bool(q and q.bid_price and q.ask_price and q.ask_price > 0)
+
+def _rel_spread(snap) -> float:
+    q = snap.latest_quote
+    return (q.ask_price - q.bid_price) / q.ask_price if q and q.ask_price else 1.0
+
+def _dte(exp: date) -> int:
+    return (exp - date.today()).days
+
+def _ok_liquidity(snap) -> bool:
+    if not _has_quote(snap):
+        return False
+    if _rel_spread(snap) > SPREADS_MAX_REL_SPREAD:
+        return False
+    oi = getattr(snap, "open_interest", 0) or 0
+    return oi >= SPREADS_MIN_OI
+
+def _delta_ok(snap) -> bool:
+    lo, hi = SPREADS_TARGET_DELTA
+    greeks = getattr(snap, "greeks", None)
+    d = abs(getattr(greeks, "delta", 0) or 0)
+    return lo <= d <= hi
+
+def _mid_price(snap) -> Optional[float]:
+    if not _has_quote(snap):
+        return None
+    q = snap.latest_quote
+    return (q.bid_price + q.ask_price) / 2
+
+# ---------- Strategies ----------
+
+def pick_bull_put_spread(od, underlying: str) -> Optional[Dict[str, Any]]:
+    """
+    Short put (near 0.20-0.35Δ), long lower-strike put same expiry.
+    Returns a spread intent with two legs and net credit.
+    """
+    snaps = od.chain_snapshots(underlying)
+    if not snaps:
+        return None
+
+    # Index by (expiry -> puts sorted by strike)
+    puts_by_exp: Dict[date, List[Tuple[float, Any]]] = {}
+
+    for s in snaps:
+        sym = getattr(s, "symbol", "")
+        r, exp, strike = _parse_occ(sym)
+        if r != "P" or not exp:
+            continue
+        dte = _dte(exp)
+        if dte < SPREADS_MIN_DTE or dte > SPREADS_MAX_DTE:
+            continue
+        if not _ok_liquidity(s):
+            continue
+        # Candidate short put must have delta in range
+        if not _delta_ok(s):
+            continue
+        puts_by_exp.setdefault(exp, []).append((strike, s))
+
+    if not puts_by_exp:
+        return None
+
+    # Try nearest expiry first
+    for exp in sorted(puts_by_exp.keys(), key=lambda e: _dte(e)):
+        puts = sorted(puts_by_exp[exp], key=lambda t: t[0])  # by strike
+        # For each short put candidate, try to find a lower strike long put
+        for short_strike, short_snap in puts:
+            # pick a protection leg 1-3 strikes lower with decent liquidity
+            # We'll walk the list for the next lower strike
+            lower_candidates = [p for p in puts if p[0] < short_strike]
+            if not lower_candidates:
+                continue
+            # choose the closest lower strike
+            long_strike, long_snap = max(lower_candidates, key=lambda t: t[0])
+
+            short_mid = _mid_price(short_snap)
+            long_mid  = _mid_price(long_snap)
+            if short_mid is None or long_mid is None:
+                continue
+
+            net_credit = round(max(short_mid * 0.98 - long_mid * 1.02, 0.01), 2)  # credit, nudge for fill
+            width = (short_strike - long_strike) * 100.0  # dollars
+            max_loss = round(width - net_credit * 100.0, 2)  # in dollars
+
+            if max_loss <= 0 or max_loss > SPREADS_MAX_RISK_PER_TRADE:
+                continue
+
+            return {
+                "asset_class": "option_spread",
+                "strategy": "bull_put_spread",
+                "underlying": underlying,
+                "expiry": exp.isoformat(),
+                "net_limit": net_credit,
+                "tif": "day",
+                "legs": [
+                    {   # SHORT PUT
+                        "symbol": getattr(short_snap, "symbol"),
+                        "side": "sell",
+                        "type": "limit",
+                        "qty": 1,
+                        "limit_price": round(short_mid * 0.98, 2),
+                    },
+                    {   # LONG PUT (protection)
+                        "symbol": getattr(long_snap, "symbol"),
+                        "side": "buy",
+                        "type": "limit",
+                        "qty": 1,
+                        "limit_price": round(long_mid * 1.02, 2),
+                    }
+                ],
+                "risk": {
+                    "width": width,                  # strike diff * 100
+                    "net_credit": net_credit * 100,  # in dollars per spread
+                    "max_loss": max_loss,            # dollars
+                },
+                "quality": {
+                    "short_rel_spread": _rel_spread(short_snap),
+                    "long_rel_spread": _rel_spread(long_snap),
+                    "short_oi": getattr(short_snap, "open_interest", 0) or 0,
+                    "long_oi": getattr(long_snap, "open_interest", 0) or 0,
+                }
+            }
+    return None
+
+
+def pick_call_debit_spread(od, underlying: str) -> Optional[Dict[str, Any]]:
+    """
+    Buy near-ATM call, sell higher-strike call same expiry.
+    Returns a spread intent (net debit) with two legs.
+    """
+    snaps = od.chain_snapshots(underlying)
+    if not snaps:
+        return None
+
+    # collect calls per expiry
+    calls_by_exp: Dict[date, List[Tuple[float, Any]]] = {}
+    atms: Dict[date, Any] = {}
+
+    for s in snaps:
+        sym = getattr(s, "symbol", "")
+        r, exp, strike = _parse_occ(sym)
+        if r != "C" or not exp:
+            continue
+        dte = _dte(exp)
+        if dte < SPREADS_MIN_DTE or dte > SPREADS_MAX_DTE:
+            continue
+        if not _ok_liquidity(s):
+            continue
+        calls_by_exp.setdefault(exp, []).append((strike, s))
+
+    if not calls_by_exp:
+        return None
+
+    for exp in sorted(calls_by_exp.keys(), key=lambda e: _dte(e)):
+        calls = sorted(calls_by_exp[exp], key=lambda t: t[0])
+        # pick an ATM-ish long call: closest to underlying via greeks or by quote moneyness
+        # Without underlying price here, we approximate ATM as median strike
+        if not calls:
+            continue
+        mid_idx = len(calls) // 2
+        long_strike, long_snap = calls[mid_idx]
+
+        # pick a short call few strikes above
+        higher = [c for c in calls if c[0] > long_strike]
+        if not higher:
+            continue
+        short_strike, short_snap = min(higher, key=lambda t: t[0])
+
+        long_mid = _mid_price(long_snap)
+        short_mid = _mid_price(short_snap)
+        if long_mid is None or short_mid is None:
+            continue
+
+        net_debit = round(max(long_mid * 1.02 - short_mid * 0.98, 0.01), 2)
+        width = (short_strike - long_strike) * 100.0
+        max_gain = round(width - net_debit * 100.0, 2)
+
+        if net_debit * 100.0 > SPREADS_MAX_RISK_PER_TRADE:
+            continue
+        if max_gain <= 0:
+            continue
+
+        return {
+            "asset_class": "option_spread",
+            "strategy": "call_debit_spread",
+            "underlying": underlying,
+            "expiry": exp.isoformat(),
+            "net_limit": -net_debit,  # negative = debit
+            "tif": "day",
+            "legs": [
+                {   # LONG CALL
+                    "symbol": getattr(long_snap, "symbol"),
+                    "side": "buy",
+                    "type": "limit",
+                    "qty": 1,
+                    "limit_price": round(long_mid * 1.02, 2),
+                },
+                {   # SHORT CALL
+                    "symbol": getattr(short_snap, "symbol"),
+                    "side": "sell",
+                    "type": "limit",
+                    "qty": 1,
+                    "limit_price": round(short_mid * 0.98, 2),
+                }
+            ],
+            "risk": {
+                "width": width,
+                "net_debit": net_debit * 100,  # dollars
+                "max_gain": max_gain,          # dollars
+            },
+            "quality": {
+                "long_rel_spread": _rel_spread(long_snap),
+                "short_rel_spread": _rel_spread(short_snap),
+                "long_oi": getattr(long_snap, "open_interest", 0) or 0,
+                "short_oi": getattr(short_snap, "open_interest", 0) or 0,
+            }
+        }
+
+    return None
