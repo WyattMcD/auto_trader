@@ -47,8 +47,9 @@ from options.orders import OptionsTrader
 from options.data import OptionsData
 from notifier import send_slack
 from strategies.spreads import pick_bull_put_spread, pick_call_debit_spread
+from strategies.spread_exits import bps_should_exit, call_debit_decision
 from config import (
-    SPREADS_MAX_CANDIDATES_PER_TICK, SPREADS_MAX_RISK_PER_TRADE
+    SPREADS_MAX_CANDIDATES_PER_TICK, SPREADS_MAX_RISK_PER_TRADE, SPREADS_MAX_OPEN
 )
 from datetime import datetime, timedelta, timezone
 # init clients (global singletons ok)
@@ -236,6 +237,10 @@ if os.path.exists(STATE_FILE):
         state = json.load(fh)
 else:
     state = {"last_signal": {}, "positions": {}, "peak_equity": None, "last_scan": None}
+
+# ensure new option-tracking containers exist
+state.setdefault("options_positions", {})   # single-leg option entries keyed by contract symbol
+state.setdefault("option_spreads", {})      # multi-leg spreads keyed by combined leg symbols
 
 # ensure log CSV
 if not os.path.exists(LOG_CSV):
@@ -956,6 +961,342 @@ def log_trade_row(row):
     df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
     df.to_csv(LOG_CSV, index=False)
 
+
+def _occ_strike(sym: str):
+    """Extract strike price from OCC option symbol (returns float or None)."""
+    try:
+        return int(sym[-8:]) / 1000.0
+    except Exception:
+        return None
+
+
+def _spread_state_key(legs):
+    symbols = sorted([leg.get("symbol", "") for leg in legs if leg.get("symbol")])
+    return "|".join(symbols)
+
+
+def _record_option_entry(intent):
+    """Persist metadata about opened option positions for exit monitoring."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if intent.get("asset_class") == "option":
+        entry_price = None
+        if str(intent.get("type", "")).lower() == "limit":
+            try:
+                entry_price = float(intent.get("limit_price") or 0.0)
+            except Exception:
+                entry_price = None
+        state["options_positions"][intent["symbol"]] = {
+            "side": intent.get("side"),
+            "qty": int(intent.get("qty", 1) or 1),
+            "entry_price": entry_price,
+            "opened": now_iso,
+            "strategy": intent.get("strategy") or intent.get("meta", {}).get("why", "option")
+        }
+        return True
+
+    if intent.get("asset_class") != "option_spread":
+        return False
+
+    legs = [
+        {
+            "symbol": leg.get("symbol"),
+            "side": leg.get("side"),
+            "type": leg.get("type", "limit"),
+            "qty": int(leg.get("qty", 1) or 1),
+            "limit_price": leg.get("limit_price")
+        }
+        for leg in intent.get("legs", [])
+        if leg.get("symbol")
+    ]
+    if not legs:
+        return False
+
+    strategy = intent.get("strategy", "spread")
+    short_leg = next((leg for leg in legs if str(leg.get("side", "")).lower() == "sell"), None)
+    long_leg = next((leg for leg in legs if str(leg.get("side", "")).lower() == "buy"), None)
+
+    entry_credit = None
+    entry_debit = None
+    width = None
+
+    if short_leg and long_leg:
+        try:
+            short_price = float(short_leg.get("limit_price") or 0.0)
+        except Exception:
+            short_price = 0.0
+        try:
+            long_price = float(long_leg.get("limit_price") or 0.0)
+        except Exception:
+            long_price = 0.0
+        short_strike = _occ_strike(short_leg["symbol"])
+        long_strike = _occ_strike(long_leg["symbol"])
+        if short_strike is not None and long_strike is not None:
+            width = abs(short_strike - long_strike)
+
+        if strategy == "bull_put_spread":
+            entry_credit = max(0.0, short_price - long_price)
+        elif strategy == "call_debit_spread":
+            entry_debit = max(0.0, long_price - short_price)
+
+    spread_key = _spread_state_key(legs)
+    state["option_spreads"][spread_key] = {
+        "strategy": strategy,
+        "legs": legs,
+        "entry_credit": entry_credit,
+        "entry_debit": entry_debit,
+        "width": width,
+        "opened": now_iso
+    }
+    return True
+
+
+def _submit_option_intent(intent):
+    try:
+        resp = execute_intent(intent, equity_trader, opt_trader)
+    except Exception:
+        logging.exception("Failed to submit option intent: %s", intent)
+        return False
+
+    # Only track if order submission did not raise.
+    if intent.get("asset_class") in {"option", "option_spread"}:
+        if _record_option_entry(intent):
+            save_state()
+    return True
+
+
+def _looks_optionable(sym: str) -> bool:
+    sym = (sym or "").strip().upper()
+    return sym.isalnum() and 1 < len(sym) <= 5
+
+
+def _count_open_short_puts():
+    try:
+        positions = opt_trader.client.get_all_positions()
+    except Exception:
+        return 0
+    count = 0
+    for pos in positions:
+        symbol = getattr(pos, "symbol", "")
+        qty = float(getattr(pos, "qty", 0) or 0)
+        if symbol.endswith("P") and qty < 0:
+            count += 1
+    return count
+
+
+def _infer_option_entry_price(symbol: str):
+    try:
+        pos = opt_trader.client.get_open_position(symbol)
+    except Exception:
+        return None
+    try:
+        price = float(getattr(pos, "avg_entry_price", 0) or 0)
+    except Exception:
+        price = 0.0
+    return abs(price) or None
+
+
+def run_option_entry_cycle():
+    if not ENABLE_OPTIONS:
+        return
+
+    watch_syms = []
+    for sym in OPTIONS_UNDERLYINGS + WATCHLIST:
+        if not sym:
+            continue
+        sym = sym.strip().upper()
+        if sym not in watch_syms:
+            watch_syms.append(sym)
+
+    if not watch_syms:
+        return
+
+    open_spreads = len(state.get("option_spreads", {}))
+    allow_new_spread = open_spreads < SPREADS_MAX_OPEN
+
+    # ---- Try spreads first (credit, then debit) ----
+    spread_candidates = watch_syms[:SPREADS_MAX_CANDIDATES_PER_TICK]
+    if allow_new_spread:
+        for sym in spread_candidates:
+            try:
+                bps = pick_bull_put_spread(od, sym)
+            except Exception:
+                logging.exception("bull_put_spread scan failed for %s", sym)
+                bps = None
+            if not bps:
+                continue
+            if bps.get("risk", {}).get("max_loss", float("inf")) <= SPREADS_MAX_RISK_PER_TRADE:
+                logging.info("Submitting bull put spread intent for %s", sym)
+                _submit_option_intent(bps)
+                return
+
+        for sym in spread_candidates:
+            try:
+                cds = pick_call_debit_spread(od, sym)
+            except Exception:
+                logging.exception("call_debit_spread scan failed for %s", sym)
+                cds = None
+            if not cds:
+                continue
+            if cds.get("risk", {}).get("net_debit", float("inf")) <= SPREADS_MAX_RISK_PER_TRADE:
+                logging.info("Submitting call debit spread intent for %s", sym)
+                _submit_option_intent(cds)
+                return
+
+    # ---- Fallback: single-leg CSPs ----
+    optionable = [sym for sym in watch_syms if _looks_optionable(sym)]
+    limit = OPTIONS_MAX_CANDIDATES_PER_TICK or len(optionable)
+    optionable = optionable[:limit]
+    try:
+        account = equity_trader.get_account()
+    except Exception:
+        logging.exception("Failed to pull account for CSP approval")
+        account = None
+    open_csp_count = _count_open_short_puts()
+
+    for sym in optionable:
+        try:
+            intent = pick_csp_intent(od, sym)
+        except Exception:
+            logging.exception("pick_csp_intent failed for %s", sym)
+            intent = None
+        if not intent or account is None:
+            continue
+        strike = _occ_strike(intent.get("symbol", ""))
+        if strike is None:
+            continue
+        est_bpr = strike * 100.0
+        if approve_csp_intent(intent, account, open_csp_count, est_bpr):
+            logging.info("Submitting CSP intent for %s", sym)
+            _submit_option_intent(intent)
+            return
+
+    # Last resort: try SPY once
+    try:
+        fallback = pick_csp_intent(od, "SPY")
+    except Exception:
+        fallback = None
+    if fallback and account is not None:
+        strike = _occ_strike(fallback.get("symbol", ""))
+        if strike is not None:
+            est_bpr = strike * 100.0
+            if approve_csp_intent(fallback, account, open_csp_count, est_bpr):
+                logging.info("Submitting fallback CSP intent for SPY")
+                _submit_option_intent(fallback)
+
+
+def monitor_option_exits():
+    if not ENABLE_OPTIONS:
+        return
+
+    # ---- Single-leg CSP exits ----
+    singles = state.get("options_positions", {})
+    single_symbols = list(singles.keys())
+    snap_map = {}
+    if single_symbols:
+        try:
+            snaps = od.snapshots_for(single_symbols)
+            snap_map = {getattr(s, "symbol", ""): s for s in snaps}
+        except Exception:
+            logging.exception("Failed to load option snapshots for exits")
+            snap_map = {}
+
+    for sym, meta in list(singles.items()):
+        entry_price = meta.get("entry_price")
+        if not entry_price:
+            inferred = _infer_option_entry_price(sym)
+            if inferred:
+                meta["entry_price"] = inferred
+                state["options_positions"][sym] = meta
+                save_state()
+                entry_price = inferred
+        snap = snap_map.get(sym)
+        if not entry_price or not snap:
+            continue
+        decision = exit_rules_for_csp(entry_price, snap)
+        if not decision:
+            continue
+        action, reason = decision
+        close_intent = {
+            "asset_class": "option",
+            "symbol": sym,
+            "side": action,
+            "type": "market",
+            "qty": meta.get("qty", 1),
+            "tif": "day",
+            "meta": {"reason": reason, "strategy": meta.get("strategy", "csp")}
+        }
+        try:
+            execute_intent(close_intent, equity_trader, opt_trader)
+            state["options_positions"].pop(sym, None)
+            save_state()
+            logging.info("Closed option %s via %s", sym, reason)
+        except Exception:
+            logging.exception("Failed to close option %s", sym)
+
+    # ---- Spread exits ----
+    spreads = state.get("option_spreads", {})
+    for key, meta in list(spreads.items()):
+        legs = meta.get("legs", [])
+        symbols = [leg.get("symbol") for leg in legs if leg.get("symbol")]
+        if not symbols:
+            continue
+        try:
+            snaps = od.snapshots_for(symbols)
+        except Exception:
+            logging.exception("Failed to load spread snapshots for %s", key)
+            continue
+        snap_lookup = {getattr(s, "symbol", ""): s for s in snaps}
+        strategy = meta.get("strategy")
+        decision = None
+
+        if strategy == "bull_put_spread":
+            short_leg = next((leg for leg in legs if str(leg.get("side", "")).lower() == "sell"), None)
+            long_leg = next((leg for leg in legs if str(leg.get("side", "")).lower() == "buy"), None)
+            entry_credit = meta.get("entry_credit")
+            if short_leg and long_leg and entry_credit:
+                short_snap = snap_lookup.get(short_leg["symbol"])
+                long_snap = snap_lookup.get(long_leg["symbol"])
+                if short_snap and long_snap:
+                    decision = bps_should_exit(entry_credit, short_snap, long_snap)
+        elif strategy == "call_debit_spread":
+            long_leg = next((leg for leg in legs if str(leg.get("side", "")).lower() == "buy"), None)
+            short_leg = next((leg for leg in legs if str(leg.get("side", "")).lower() == "sell"), None)
+            entry_debit = meta.get("entry_debit")
+            width = meta.get("width")
+            if long_leg and short_leg and entry_debit and width:
+                long_snap = snap_lookup.get(long_leg["symbol"])
+                short_snap = snap_lookup.get(short_leg["symbol"])
+                if long_snap and short_snap:
+                    decision = call_debit_decision(entry_debit, long_snap, short_snap, width)
+
+        if not decision:
+            continue
+
+        _, reason = decision
+        exit_legs = [
+            {
+                "symbol": leg["symbol"],
+                "side": "buy" if str(leg.get("side", "")).lower() == "sell" else "sell",
+                "type": "market",
+                "qty": leg.get("qty", 1)
+            }
+            for leg in legs
+        ]
+        exit_intent = {
+            "asset_class": "option_spread",
+            "strategy": strategy,
+            "legs": exit_legs,
+            "tif": "day",
+            "meta": {"reason": reason}
+        }
+        try:
+            execute_intent(exit_intent, equity_trader, opt_trader)
+            state["option_spreads"].pop(key, None)
+            save_state()
+            logging.info("Closed %s via %s", strategy, reason)
+        except Exception:
+            logging.exception("Failed to close spread %s", key)
+
 # ----------------------------
 # Main scanning / execution loop
 # ----------------------------
@@ -1017,6 +1358,17 @@ def run_scan_once():
                         logging.exception("Failed to submit trailing stop for %s", ticker)
         except Exception:
             logging.exception("update_trailing_stops: general failure")
+
+    # Run options lifecycle on each tick (exits before new entries)
+    try:
+        monitor_option_exits()
+    except Exception:
+        logging.exception("Option exit monitor failed")
+
+    try:
+        run_option_entry_cycle()
+    except Exception:
+        logging.exception("Option entry cycle failed")
     # check account pause
     paused, drawdown = account_paused()
     if paused:
