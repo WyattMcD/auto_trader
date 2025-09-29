@@ -1116,15 +1116,18 @@ def run_scan_once():
                             intents.append(bps)
                             submitted = True
                             break
-                            # If no BPS opportunity, optionally try a small call debit spread
-                        if not submitted:
-                            for u in candidates:
-                                cds = pick_call_debit_spread(od, u)
-                                if cds and cds["risk"]["net_debit"] <= SPREADS_MAX_RISK_PER_TRADE:
-                                    intents.append(cds)
-                                    break
 
-                    return intents
+                    if not submitted:
+                        # If no BPS opportunity, optionally try a small call debit spread
+                        for u in candidates:
+                            cds = pick_call_debit_spread(od, u)
+                            if cds and cds["risk"]["net_debit"] <= SPREADS_MAX_RISK_PER_TRADE:
+                                intents.append(cds)
+                                submitted = True
+                                break
+
+                    if submitted:
+                        return intents
                     def looks_optionable(sym: str) -> bool:
                         # quick guard: real US equities/ETFs are usually letters & digits, not crypto pairs
                         return sym.isalnum() and len(sym) <= 5  # lets SPY, AAPL, NVDA, etc. through
