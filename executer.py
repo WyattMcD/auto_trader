@@ -5,6 +5,11 @@ from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest
 from risk import place_capped_buy
 
+
+
+
+
+
 def execute_intent(intent: Dict[str, Any],
                    equity_trader: TradingClient,
                    options_trader) -> Any:
