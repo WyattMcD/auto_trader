@@ -30,6 +30,10 @@ class OptionsData:
         # Your callers expect a list of snapshots
         return list(resp.values())
 
+    # Backwards-compat alias (older code in the repo expected the pluralized name)
+    def chain_snapshots(self, underlying: str):
+        return self.chain_snapshot(underlying)
+
     def snapshots_for(self, symbols: list[str]):
         """
         Get snapshots for specific contract symbols (if you already picked contracts).
