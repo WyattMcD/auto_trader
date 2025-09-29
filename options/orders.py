@@ -39,7 +39,7 @@ class OptionsTrader:
 
         return self.client.submit_order(req)
 
-def submit_spread_paired(self, legs: List[Dict[str, Any]], tif: str = "day"):
+    def submit_spread_paired(self, legs: List[Dict[str, Any]], tif: str = "day"):
         """
         Submit two single-leg limit orders back-to-back.
         If the second fails to submit, we cancel the first.

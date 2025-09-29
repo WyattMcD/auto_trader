@@ -70,6 +70,12 @@ def get_spot_px(ticker: str) -> float | None:
         return None
 
 def main():
+    if not API_KEY or not API_SECRET:
+        print("[diag] Alpaca API credentials missing; skipping options smoke test.")
+        print("       -> Set APCA_API_KEY_ID and APCA_API_SECRET_KEY in the environment.")
+        print("       -> Paper accounts also require APCA_API_BASE_URL=https://paper-api.alpaca.markets.")
+        return
+
     trading = TradingClient(API_KEY, API_SECRET, paper=IS_PAPER)
     opt_trader = OptionsTrader(API_KEY, API_SECRET, paper=IS_PAPER)
 
