@@ -10,6 +10,8 @@ from risk import place_capped_buy
 
 
 
+
+
 def execute_intent(intent: Dict[str, Any],
                    equity_trader: TradingClient,
                    options_trader) -> Any:
