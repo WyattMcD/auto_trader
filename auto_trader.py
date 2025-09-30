@@ -288,8 +288,30 @@ def save_state():
         json.dump(state, fh, indent=2)
 
 def get_account_info():
+    """Return basic account metrics while preferring cash over margin."""
     acct = api.get_account()
-    return {"equity": float(acct.equity), "cash": float(acct.cash)}
+
+    def _to_float(val, fallback=0.0):
+        try:
+            return float(val)
+        except Exception:
+            return float(fallback)
+
+    equity = _to_float(getattr(acct, "equity", 0.0))
+    cash = _to_float(getattr(acct, "cash", 0.0))
+    buying_power = _to_float(getattr(acct, "buying_power", cash), fallback=cash)
+
+    # Do not allow sizing logic to lean on margin. Once cash is exhausted we
+    # return 0 so new positions are skipped.  `buying_power` can be higher than
+    # cash for margin accounts, so clamp to the smaller positive amount.
+    available_funds = max(0.0, min(cash, buying_power))
+
+    return {
+        "equity": equity,
+        "cash": cash,
+        "buying_power": buying_power,
+        "available_funds": available_funds,
+    }
 
 def update_peak_equity(equity):
     peak = state.get("peak_equity") or equity
@@ -407,16 +429,27 @@ MAX_SHARES = int(os.getenv("MAX_SHARES", "1000"))
 FLOOR_SHARES = os.getenv("FLOOR_SHARES", "int")
 DEFAULT_MAX_RISK_PCT = float(os.getenv("MAX_RISK_PCT", "0.005"))
 
-def calc_shares_for_risk(equity, risk_pct, entry_price, stop_pct):
+def calc_shares_for_risk(equity, available_funds, risk_pct, entry_price, stop_pct):
     try:
         equity = float(equity)
         entry_price = float(entry_price)
         stop_pct = float(stop_pct)
         risk_pct = float(risk_pct or DEFAULT_MAX_RISK_PCT)
+        available_funds = float(available_funds) if available_funds is not None else equity
     except Exception:
         return 0.0
 
     if equity <= 0 or entry_price <= 0 or stop_pct <= 0:
+        return 0.0
+
+    # Do not size new trades if we do not have un-margined cash available.
+    available_funds = max(0.0, min(equity, available_funds))
+    if available_funds <= 0:
+        logging.info(
+            "Skipping entry: no available cash/buying power without using margin (equity=%.2f, available=%.2f)",
+            equity,
+            available_funds,
+        )
         return 0.0
 
     if entry_price < MIN_PRICE:
@@ -425,7 +458,9 @@ def calc_shares_for_risk(equity, risk_pct, entry_price, stop_pct):
 
     risk_dollars = equity * risk_pct
     shares_by_risk = risk_dollars / (entry_price * stop_pct)
-    shares_by_notional = (equity * MAX_NOTIONAL_PCT) / entry_price
+
+    per_trade_dollar_cap = min(equity * MAX_NOTIONAL_PCT, available_funds)
+    shares_by_notional = per_trade_dollar_cap / entry_price
     shares = min(shares_by_risk, shares_by_notional, MAX_SHARES)
 
     if FLOOR_SHARES == "int" or entry_price >= 1.0:
@@ -1381,6 +1416,7 @@ def run_scan_once():
 
     acct = get_account_info()
     equity = acct["equity"]
+    available_funds = acct.get("available_funds", equity)
 
     # update peak
     update_peak_equity(equity)
@@ -1550,7 +1586,7 @@ def run_scan_once():
             # if buy signal and we don't already have a position in ticker -> consider entry
             if sig == "buy" and ticker not in open_symbols:
                 # sizing
-                qty = calc_shares_for_risk(equity, MAX_RISK_PCT, price, STOP_PCT)
+                qty = calc_shares_for_risk(equity, available_funds, MAX_RISK_PCT, price, STOP_PCT)
                 # sanity: if qty < tiny threshold (e.g., $1 of position) skip
                 if qty <= 0 or qty * price < 1.0:
                     logging.info("Sizing for %s returned qty=%s (insufficient). Skipping.", ticker, qty)
@@ -1579,6 +1615,13 @@ def run_scan_once():
                             f":rocket: Placed BUY {ticker} — qty={qty} price={price} status={status} id={order_id}")
                     except Exception:
                         logging.debug("send_slack failed for BUY alert (swallowed).")
+                # Reduce the running cash/buying-power budget for this scan so
+                # subsequent tickers cannot immediately reuse the same funds.
+                try:
+                    notional = float(qty) * float(price)
+                except Exception:
+                    notional = 0.0
+                available_funds = max(0.0, available_funds - notional)
                 # -------------------------------------
 
                 # record state and log
