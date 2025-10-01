@@ -57,7 +57,25 @@ def _pid_running(pid: int) -> bool:
     if not raw:
         return False
 
-    return "auto_trader.py" in raw
+    argv = [part for part in raw.split("\0") if part]
+    if not argv:
+        return False
+
+    # The dev autoreloader executes ``python scripts/run_with_reloader.py -- ...`` and
+    # therefore has ``auto_trader.py`` in its argument list even though it is not the
+    # process we want to guard against.  To avoid treating the reloader itself as a
+    # live trading instance we only consider a PID active when ``auto_trader.py`` is
+    # the script being executed directly (the second argument to the Python
+    # interpreter) and the reloader helper is absent from the command line.
+    try:
+        script_arg = argv[1]
+    except IndexError:
+        script_arg = ""
+
+    if script_arg.endswith("auto_trader.py") and "scripts/run_with_reloader.py" not in argv:
+        return True
+
+    return False
 
 def acquire_lock():
     # make sure state dir exists
