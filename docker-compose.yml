@@ -1,6 +1,7 @@
 version: '3.9'
 services:
   auto_trader:
+    command: ["sh","-lc","watchmedo auto-restart --patterns='*.py' --ignore-patterns='*.log;*/.git/*;*/__pycache__/*;*/logs/*;*/state/*' --recursive -- python auto_trader.py"]
     build: .
     image: wyatt/auto_trader:latest
     restart: unless-stopped
@@ -19,8 +20,5 @@ services:
         limits:
           memory: 1G
     # Development command that restarts automatically when files change
-    command:
-      - python
-      - scripts/run_with_reloader.py
     environment:
       PYTHONUNBUFFERED: '1'

@@ -5,10 +5,10 @@ alpha-vantage
 pandas
 numpy
 PyYAML
+watchfiles
 requests
 python-dotenv
 ta
 watchgod
-watchfiles
 anyio
-watchfiles
+watchdog
