@@ -500,6 +500,7 @@ else:
 state.setdefault("options_positions", {})   # single-leg option entries keyed by contract symbol
 state.setdefault("option_spreads", {})      # multi-leg spreads keyed by combined leg symbols
 state.setdefault("rotation", {})            # round-robin cursors (e.g. options watchlist scans)
+state.setdefault("strategy_state", {})      # per-ticker, per-strategy execution metadata
 
 try:
     _LAST_SAVED_STATE = json.loads(json.dumps(state, sort_keys=True))
@@ -2056,221 +2057,361 @@ def run_scan_once():
                 for intent in intents:
                     execute_intent(intent, equity_trader, opt_trader)
 
-            chosen = None
-            strategy_name = "sma"  # default label
-            if rsi_res and rsi_res.get("signal"):
-                chosen = rsi_res
-                strategy_name = "rsi_sma"
-            elif sma_res and sma_res.get("signal"):
-                chosen = sma_res
-                strategy_name = "sma"
-            else:
-                chosen = {"signal": None}
+            strategy_evaluations = []
+            if sma_res:
+                strategy_evaluations.append(("sma", sma_res))
+            if rsi_res:
+                strategy_evaluations.append(("rsi_sma", rsi_res))
 
-            sig = chosen.get("signal")
-            price = chosen.get("price") or (sma_res.get("price") if sma_res else None)
-            score = chosen.get("score", 0.0)
+            if not strategy_evaluations:
+                continue
 
-            logging.debug("Ticker %s chosen_strategy=%s signal=%s price=%s score=%s", ticker, strategy_name, sig, price,
-                          score)
+            now_utc = datetime.now(timezone.utc)
+            strategy_state = state.setdefault("strategy_state", {})
+            ticker_strategy_state = strategy_state.setdefault(ticker, {})
 
-            # if buy signal and we don't already have a position in ticker -> consider entry
-            if sig == "buy" and ticker not in open_symbols:
-                buy_signals_seen += 1
-                if not can_open_new_positions:
-                    logging.debug("Skipping %s buy — concurrency ceiling reached", ticker)
-                    concurrency_blocks += 1
+            for strategy_name, result in strategy_evaluations:
+                sig = (result or {}).get("signal")
+                price = (result or {}).get("price") or (sma_res.get("price") if sma_res else None)
+                score = float((result or {}).get("score", 0.0) or 0.0)
+
+                logging.debug(
+                    "Ticker %s strategy=%s signal=%s price=%s score=%s",
+                    ticker,
+                    strategy_name,
+                    sig,
+                    price,
+                    score,
+                )
+
+                if not sig:
                     continue
-                if ticker in pending_buy_symbols:
-                    logging.info(
-                        "Skipping %s buy — existing open BUY order still pending fill.",
+
+                last_meta = ticker_strategy_state.get(strategy_name, {})
+                last_time = to_aware_datetime(last_meta.get("time")) if last_meta else None
+                if last_time and (now_utc - last_time) < timedelta(minutes=COOLDOWN_MINUTES):
+                    logging.debug(
+                        "Skipping %s/%s — cooldown active (last=%s)",
                         ticker,
-                    )
-                    pending_buy_skips += 1
-                    continue
-                if ticker in pending_buy_symbols:
-                    logging.info(
-                        "Skipping %s buy — existing open BUY order still pending fill.",
-                        ticker,
+                        strategy_name,
+                        last_time,
                     )
                     continue
-                # sizing
-                qty = calc_shares_for_risk(equity, available_funds, MAX_RISK_PCT, price, STOP_PCT)
-                # sanity: if qty < tiny threshold (e.g., $1 of position) skip
-                if qty <= 0 or qty * price < 1.0:
-                    logging.info("Sizing for %s returned qty=%s (insufficient). Skipping.", ticker, qty)
-                    send_slack(f":information_source: SKIPPED {ticker} — qty={qty} price=${price:.2f} (insufficient size or below MIN_PRICE).")
-                    continue
 
-                # place order
-                if ORDER_TYPE == "market":
-                    order = place_order_market_buy(ticker, qty)
-                else:
-                    order = place_order_limit_buy(ticker, qty, price)
-                order_id = getattr(order, "id", None) if order else None
-                status = getattr(order, "status", None) if order else "failed"
-                notes = ""
-                logging.info("Placed order for %s qty=%s id=%s status=%s", ticker, qty, order_id, status)
-                if order:
-                    buys_placed += 1
+                position_active = bool(last_meta.get("position_active"))
 
-                # ---- Slack alert for buy (safe) ----
-                try:
-                    notional = float(qty) * float(price)
-                    send_slack(
-                        f":rocket: Placed BUY {ticker} — qty={qty} @ ${price:.2f}  notional=${notional:,.2f}  status={status}  id={order_id}")
-                except Exception:
-                    # fallback short message if formatting or notifier fails
-                    try:
-                        send_slack(
-                            f":rocket: Placed BUY {ticker} — qty={qty} price={price} status={status} id={order_id}")
-                    except Exception:
-                        logging.debug("send_slack failed for BUY alert (swallowed).")
-                # Reduce the running cash/buying-power budget for this scan so
-                # subsequent tickers cannot immediately reuse the same funds.
-                try:
-                    notional = float(qty) * float(price)
-                except Exception:
-                    notional = 0.0
-                available_funds = max(0.0, available_funds - notional)
-                if order:
-                    open_symbols.add(ticker)
-                    if ticker not in counted_symbols:
-                        pending_buy_symbols.add(ticker)
-                        pending_slots += 1
-                        active_slots = min(MAX_CONCURRENT_POSITIONS, len(counted_symbols) + pending_slots)
-                        can_open_new_positions = active_slots < MAX_CONCURRENT_POSITIONS
-                # -------------------------------------
-
-                # record state and log
-                # record state + metadata for auditing
-                state["last_signal"][ticker] = {
-                    "time": datetime.now(timezone.utc).isoformat(),
-                    "signal": "buy",
-                    "price": price,
-                    "strategy": strategy_name,  # e.g. "rsi_sma" or "sma"
-                    "score": float(score or 0.0)
-                }
-                state["positions"][ticker] = {
-                    "entry_time": datetime.now(timezone.utc).isoformat(),
-                    "qty": qty,
-                    "order_id": order_id,
-                    "strategy": strategy_name,
-                    "score": float(score or 0.0),
-                    # we optionally include entry_price once filled in place_market wrapper
-                }
-                save_state()
-
-                # extend CSV log row to include strategy and score (keeps previous fields)
-                log_trade_row({
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "ticker": ticker,
-                    "action": "BUY",
-                    "signal_price": price,
-                    "qty": qty,
-                    "order_id": order_id,
-                    "status": status,
-                    "notes": notes,
-                    "equity": equity,
-                    "cash": acct["cash"],
-                    "strategy": strategy_name,
-                    "score": float(score or 0.0)
-                })
-                # refresh positions and potentially throttle more entries
-                open_positions = api.list_positions()
-                counted_positions = [p for p in open_positions if _position_counts_toward_limit(p)]
-                open_symbols = set([p.symbol for p in counted_positions])
-                if len(counted_positions) >= MAX_CONCURRENT_POSITIONS:
-                    logging.info("Reached max concurrent positions after entry. Further buys disabled until positions close.")
-                    can_open_new_positions = False
-
-            # if sell/exit signal and we already have position -> exit (market sell)
-            elif sig == "sell" and ticker in open_symbols:
-                sell_signals_seen += 1
-                # place market sell for quantity we hold
-                pos = next((p for p in counted_positions if p.symbol == ticker), None)
-                if pos is None:
-                    pos = next((p for p in open_positions if p.symbol == ticker), None)
-                if not pos:
-                    continue
-                qty = float(pos.qty)
-                if qty <= 0:
-                    logging.info(
-                        "Skipping exit for %s — position reports non-positive quantity (%s).",
-                        ticker,
-                        qty,
-                    )
-                    state["positions"].pop(ticker, None)
-                    save_state()
-                    open_symbols.discard(ticker)
-                    counted_symbols.discard(ticker)
-                    continue
-
-                pdata = state.get("positions", {}).get(ticker, {})
-                # Cancel any resting protective orders so the shares are available for exit.
-                for field, label in (("stop_order_id", "stop"), ("tp_order_id", "take-profit")):
-                    oid = pdata.get(field)
-                    if not oid:
+                if sig == "buy":
+                    buy_signals_seen += 1
+                    if position_active:
+                        logging.debug(
+                            "Skipping %s/%s buy — strategy already active.",
+                            ticker,
+                            strategy_name,
+                        )
                         continue
-                    try:
-                        api.cancel_order(oid)
-                        logging.info("Cancelled %s order %s for %s prior to exit.", label, oid, ticker)
-                        pdata.pop(field, None)
-                        state["positions"][ticker] = pdata
-                        save_state()
-                    except Exception:
-                        logging.exception("Failed to cancel %s order %s for %s prior to exit.", label, oid, ticker)
 
-                try:
-                    order = api.submit_order(symbol=ticker, qty=qty, side='sell', type='market', time_in_force='day')
-                    order_id = getattr(order, "id", None)
-                    status = getattr(order, "status", None)
-                    notes = "exit signal"
-                    logging.info("Placed exit for %s qty=%s id=%s", ticker, qty, order_id)
-                    sells_placed += 1
-                    # Slack alert: exit placed
+                    if ticker not in open_symbols and not can_open_new_positions:
+                        logging.debug("Skipping %s/%s buy — concurrency ceiling reached", ticker, strategy_name)
+                        concurrency_blocks += 1
+                        continue
+
+                    if ticker not in open_symbols and ticker in pending_buy_symbols:
+                        logging.info(
+                            "Skipping %s/%s buy — existing open BUY order still pending fill.",
+                            ticker,
+                            strategy_name,
+                        )
+                        pending_buy_skips += 1
+                        continue
+
+                    qty = calc_shares_for_risk(equity, available_funds, MAX_RISK_PCT, price, STOP_PCT)
+                    if qty <= 0 or qty * price < 1.0:
+                        logging.info("Sizing for %s/%s returned qty=%s (insufficient). Skipping.", ticker, strategy_name, qty)
+                        send_slack(
+                            f":information_source: SKIPPED {ticker} [{strategy_name}] — qty={qty} price=${price:.2f} (insufficient size or below MIN_PRICE)."
+                        )
+                        continue
+
+                    if ORDER_TYPE == "market":
+                        order = place_order_market_buy(ticker, qty)
+                    else:
+                        order = place_order_limit_buy(ticker, qty, price)
+
+                    order_id = getattr(order, "id", None) if order else None
+                    status = getattr(order, "status", None) if order else "failed"
+                    notes = ""
+                    logging.info(
+                        "Placed order for %s/%s qty=%s id=%s status=%s",
+                        ticker,
+                        strategy_name,
+                        qty,
+                        order_id,
+                        status,
+                    )
+                    if order:
+                        buys_placed += 1
+
                     try:
-                        send_slack(f":white_check_mark: EXIT {ticker} — qty={qty} @ ${price:.2f}  id={order_id}  status={status}")
+                        notional = float(qty) * float(price)
+                        send_slack(
+                            f":rocket: Placed BUY {ticker} [{strategy_name}] — qty={qty} @ ${price:.2f}  notional=${notional:,.2f}  status={status}  id={order_id}"
+                        )
                     except Exception:
-                        send_slack(f":white_check_mark: EXIT {ticker} — qty={qty} id={order_id}")
-                    # clear state
-                    state["last_signal"][ticker] = {"time": datetime.now(timezone.utc).isoformat(), "signal": "sell", "price": price}
-                    state["positions"].pop(ticker, None)
+                        try:
+                            send_slack(
+                                f":rocket: Placed BUY {ticker} [{strategy_name}] — qty={qty} price={price} status={status} id={order_id}"
+                            )
+                        except Exception:
+                            logging.debug("send_slack failed for BUY alert (swallowed).")
+
+                    try:
+                        notional = float(qty) * float(price)
+                    except Exception:
+                        notional = 0.0
+                    available_funds = max(0.0, available_funds - notional)
+
+                    if order:
+                        open_symbols.add(ticker)
+                        if ticker not in counted_symbols:
+                            pending_buy_symbols.add(ticker)
+                            pending_slots += 1
+                            active_slots = min(MAX_CONCURRENT_POSITIONS, len(counted_symbols) + pending_slots)
+                            can_open_new_positions = active_slots < MAX_CONCURRENT_POSITIONS
+
+                    now_iso = now_utc.isoformat()
+                    ticker_strategy_state[strategy_name] = {
+                        "time": now_iso,
+                        "signal": "buy",
+                        "price": price,
+                        "score": score,
+                        "qty": float(qty),
+                        "order_id": order_id,
+                        "position_active": True,
+                    }
+                    state["last_signal"][ticker] = {
+                        "time": now_iso,
+                        "signal": "buy",
+                        "price": price,
+                        "strategy": strategy_name,
+                        "score": score,
+                    }
+
+                    pos_entry = state.get("positions", {}).get(ticker, {})
+                    strategy_trades = pos_entry.get("strategy_trades", {})
+                    strategy_trades[strategy_name] = {
+                        "qty": float(qty),
+                        "order_id": order_id,
+                        "score": score,
+                        "entry_time": now_iso,
+                    }
+                    total_qty = sum(float(trade.get("qty", 0.0) or 0.0) for trade in strategy_trades.values())
+                    pos_entry.update({
+                        "entry_time": now_iso,
+                        "qty": total_qty,
+                        "order_id": order_id,
+                        "strategy": strategy_name,
+                        "score": score,
+                        "strategy_trades": strategy_trades,
+                    })
+                    state["positions"][ticker] = pos_entry
                     save_state()
-                    pending_buy_symbols.discard(ticker)
-                    rebuild_concurrency_snapshot(refresh_positions=True)
+
                     log_trade_row({
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "timestamp": now_iso,
                         "ticker": ticker,
-                        "action": "SELL",
+                        "action": "BUY",
                         "signal_price": price,
                         "qty": qty,
                         "order_id": order_id,
                         "status": status,
                         "notes": notes,
                         "equity": equity,
-                        "cash": acct["cash"]
+                        "cash": acct["cash"],
+                        "strategy": strategy_name,
+                        "score": score,
                     })
-                except APIError as e:
-                    message = str(e).lower()
-                    if "insufficient qty available" in message:
-                        logging.warning(
-                            "Exit order for %s skipped — Alpaca reports insufficient quantity available. Clearing local state.",
-                            ticker,
+
+                    open_positions = api.list_positions()
+                    counted_positions = [p for p in open_positions if _position_counts_toward_limit(p)]
+                    open_symbols = {p.symbol for p in counted_positions}
+                    if len(counted_positions) >= MAX_CONCURRENT_POSITIONS:
+                        logging.info(
+                            "Reached max concurrent positions after entry. Further buys disabled until positions close."
                         )
-                        state["positions"].pop(ticker, None)
+                        can_open_new_positions = False
+
+                elif sig == "sell":
+                    sell_signals_seen += 1
+                    if not position_active and ticker not in open_symbols:
+                        logging.debug(
+                            "Skipping %s/%s sell — no active position.",
+                            ticker,
+                            strategy_name,
+                        )
+                        continue
+
+                    pos = next((p for p in counted_positions if p.symbol == ticker), None)
+                    if pos is None:
+                        pos = next((p for p in open_positions if p.symbol == ticker), None)
+                    if not pos:
+                        continue
+
+                    total_qty = float(pos.qty)
+                    strat_qty = float(last_meta.get("qty") or 0.0)
+                    qty_to_exit = strat_qty if strat_qty > 0 else total_qty
+
+                    if qty_to_exit <= 0:
+                        logging.info(
+                            "Skipping exit for %s/%s — recorded qty non-positive (qty=%s).",
+                            ticker,
+                            strategy_name,
+                            qty_to_exit,
+                        )
+                        ticker_strategy_state[strategy_name] = {
+                            "time": now_utc.isoformat(),
+                            "signal": "sell",
+                            "price": price,
+                            "score": score,
+                            "position_active": False,
+                        }
                         save_state()
+                        continue
+
+                    qty_to_exit = min(total_qty, qty_to_exit)
+
+                    pdata = state.get("positions", {}).get(ticker, {})
+                    for field, label in (("stop_order_id", "stop"), ("tp_order_id", "take-profit")):
+                        oid = pdata.get(field)
+                        if not oid:
+                            continue
+                        try:
+                            api.cancel_order(oid)
+                            logging.info(
+                                "Cancelled %s order %s for %s prior to exit.",
+                                label,
+                                oid,
+                                ticker,
+                            )
+                            pdata.pop(field, None)
+                            state["positions"][ticker] = pdata
+                            save_state()
+                        except Exception:
+                            logging.exception(
+                                "Failed to cancel %s order %s for %s prior to exit.",
+                                label,
+                                oid,
+                                ticker,
+                            )
+
+                    try:
+                        order = api.submit_order(
+                            symbol=ticker,
+                            qty=qty_to_exit,
+                            side='sell',
+                            type='market',
+                            time_in_force='day',
+                        )
+                        order_id = getattr(order, "id", None)
+                        status = getattr(order, "status", None)
+                        notes = f"exit signal ({strategy_name})"
+                        logging.info(
+                            "Placed exit for %s/%s qty=%s id=%s",
+                            ticker,
+                            strategy_name,
+                            qty_to_exit,
+                            order_id,
+                        )
+                        sells_placed += 1
+                        try:
+                            send_slack(
+                                f":white_check_mark: EXIT {ticker} [{strategy_name}] — qty={qty_to_exit} @ ${price:.2f}  id={order_id}  status={status}"
+                            )
+                        except Exception:
+                            send_slack(
+                                f":white_check_mark: EXIT {ticker} [{strategy_name}] — qty={qty_to_exit} id={order_id}"
+                            )
+
+                        now_iso = now_utc.isoformat()
+                        ticker_strategy_state[strategy_name] = {
+                            "time": now_iso,
+                            "signal": "sell",
+                            "price": price,
+                            "score": score,
+                            "qty": 0.0,
+                            "order_id": order_id,
+                            "position_active": False,
+                        }
+                        state["last_signal"][ticker] = {
+                            "time": now_iso,
+                            "signal": "sell",
+                            "price": price,
+                            "strategy": strategy_name,
+                            "score": score,
+                        }
+
+                        pos_entry = state.get("positions", {}).get(ticker, {})
+                        strategy_trades = pos_entry.get("strategy_trades", {})
+                        strategy_trades.pop(strategy_name, None)
+                        if not strategy_trades:
+                            state["positions"].pop(ticker, None)
+                        else:
+                            total_qty = sum(float(trade.get("qty", 0.0) or 0.0) for trade in strategy_trades.values())
+                            pos_entry.update({
+                                "strategy_trades": strategy_trades,
+                                "qty": total_qty,
+                                "strategy": strategy_name,
+                                "score": score,
+                            })
+                            state["positions"][ticker] = pos_entry
+                        save_state()
+
                         pending_buy_symbols.discard(ticker)
                         rebuild_concurrency_snapshot(refresh_positions=True)
-
-                        open_symbols.discard(ticker)
-                        counted_symbols.discard(ticker)
+                        log_trade_row({
+                            "timestamp": now_iso,
+                            "ticker": ticker,
+                            "action": "SELL",
+                            "signal_price": price,
+                            "qty": qty_to_exit,
+                            "order_id": order_id,
+                            "status": status,
+                            "notes": notes,
+                            "equity": equity,
+                            "cash": acct["cash"],
+                            "strategy": strategy_name,
+                            "score": score,
+                        })
+                    except APIError as e:
+                        message = str(e).lower()
+                        if "insufficient qty available" in message:
+                            logging.warning(
+                                "Exit order for %s/%s skipped — Alpaca reports insufficient quantity available. Clearing local state.",
+                                ticker,
+                                strategy_name,
+                            )
+                            strategy_trades = state.get("positions", {}).get(ticker, {}).get("strategy_trades", {})
+                            strategy_trades.pop(strategy_name, None)
+                            if not strategy_trades:
+                                state["positions"].pop(ticker, None)
+                            ticker_strategy_state[strategy_name] = {
+                                "time": now_utc.isoformat(),
+                                "signal": "sell",
+                                "price": price,
+                                "score": score,
+                                "qty": 0.0,
+                                "position_active": False,
+                            }
+                            save_state()
+                            pending_buy_symbols.discard(ticker)
+                            rebuild_concurrency_snapshot(refresh_positions=True)
+                            open_symbols.discard(ticker)
+                            counted_symbols.discard(ticker)
+                            continue
+                        logging.exception("Failed to place exit order %s/%s: %s", ticker, strategy_name, e)
                         continue
-                    logging.exception("Failed to place exit order %s: %s", ticker, e)
-                    continue
-                except Exception as e:
-                    logging.exception("Failed to place exit order %s: %s", ticker, e)
-                    continue
+                    except Exception as e:
+                        logging.exception("Failed to place exit order %s/%s: %s", ticker, strategy_name, e)
+                        continue
 
         except Exception as e:
             logging.exception("Error scanning %s: %s", ticker, e)
