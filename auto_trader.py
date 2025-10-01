@@ -1898,6 +1898,12 @@ def run_scan_once():
         }
 
     rebuild_concurrency_snapshot()
+
+    open_symbols.update(pending_buy_symbols)
+
+    pending_slots = sum(1 for sym in pending_buy_symbols if sym not in counted_symbols)
+    active_slots = len(counted_symbols) + pending_slots
+    can_open_new_positions = active_slots < MAX_CONCURRENT_POSITIONS
     if not can_open_new_positions:
         logging.info(
             "Max concurrent positions reached (%d). Counting %d filled and %d pending-buy slots (total open positions: %d). Suppressing new entries but continuing exit checks.",
@@ -2082,6 +2088,12 @@ def run_scan_once():
                     )
                     pending_buy_skips += 1
                     continue
+                if ticker in pending_buy_symbols:
+                    logging.info(
+                        "Skipping %s buy — existing open BUY order still pending fill.",
+                        ticker,
+                    )
+                    continue
                 # sizing
                 qty = calc_shares_for_risk(equity, available_funds, MAX_RISK_PCT, price, STOP_PCT)
                 # sanity: if qty < tiny threshold (e.g., $1 of position) skip
@@ -2250,6 +2262,9 @@ def run_scan_once():
                         save_state()
                         pending_buy_symbols.discard(ticker)
                         rebuild_concurrency_snapshot(refresh_positions=True)
+
+                        open_symbols.discard(ticker)
+                        counted_symbols.discard(ticker)
                         continue
                     logging.exception("Failed to place exit order %s: %s", ticker, e)
                     continue
