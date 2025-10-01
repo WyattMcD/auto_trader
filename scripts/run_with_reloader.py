@@ -1,11 +1,21 @@
 """Run a command with automatic reload when project files change.
 
 This helper is designed for Docker development workflows where code on the host
+codex/fix-missing-watchfiles-module-error-cc0ljm
+is bind-mounted into the container (see ``docker-compose.yml``). Without the
+bind mount, Docker will continue to run the version of the code baked into the
+image which makes file changes from an IDE invisible to the reloader.  The
+script intentionally avoids the optional ``watchfiles`` dependency which has
+caused installation issues in some environments.  Instead we rely solely on
+:mod:`watchgod`, a pure-Python watcher that is already part of our dependency
+set and works out-of-the-box inside the provided Docker image.
+=======
 is bind-mounted into the container.  It intentionally avoids the optional
 ``watchfiles`` dependency which has caused installation issues in some
 environments.  Instead we rely solely on :mod:`watchgod`, a pure-Python watcher
 that is already part of our dependency set and works out-of-the-box inside the
 provided Docker image.
+main
 
 Example usage from the repository root::
 
