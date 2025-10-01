@@ -445,6 +445,14 @@ def _position_counts_toward_limit(position) -> bool:
         return False
     return True
 
+
+def _order_counts_toward_limit(order) -> bool:
+    """Return True if an order should consume a concurrency slot when open."""
+    asset_class = str(getattr(order, "asset_class", "") or "").lower()
+    if not COUNT_OPTION_POSITIONS_TOWARD_MAX and asset_class in {"option", "us_option"}:
+        return False
+    return True
+
 LOG_CSV = os.getenv("TRADE_LOG_CSV", "auto_trade_log.csv")
 STATE_FILE = os.getenv("STATE_FILE", "auto_state.json")
 ROTATION_PERSIST_INTERVAL = float(os.getenv("ROTATION_PERSIST_INTERVAL", "300"))
@@ -1837,13 +1845,37 @@ def run_scan_once():
     open_positions = api.list_positions()
 
     counted_positions = [p for p in open_positions if _position_counts_toward_limit(p)]
-    open_symbols = set([p.symbol for p in counted_positions])
-    can_open_new_positions = len(counted_positions) < MAX_CONCURRENT_POSITIONS
+    counted_symbols = {p.symbol for p in counted_positions}
+    open_symbols = set(counted_symbols)
+
+    pending_buy_symbols = set()
+    try:
+        open_orders = api.list_orders(status="open", limit=200, nested=True)
+    except Exception:
+        logging.exception(
+            "Failed to fetch open orders; pending-order safeguards temporarily disabled."
+        )
+        open_orders = []
+    else:
+        pending_buy_symbols = {
+            getattr(order, "symbol", "").upper()
+            for order in open_orders
+            if getattr(order, "symbol", None)
+            and str(getattr(order, "side", "")).lower() == "buy"
+            and _order_counts_toward_limit(order)
+        }
+
+    open_symbols.update(pending_buy_symbols)
+
+    pending_slots = sum(1 for sym in pending_buy_symbols if sym not in counted_symbols)
+    active_slots = len(counted_symbols) + pending_slots
+    can_open_new_positions = active_slots < MAX_CONCURRENT_POSITIONS
     if not can_open_new_positions:
         logging.info(
-            "Max concurrent positions reached (%d). Counting %d qualifying positions (total open positions: %d). Suppressing new entries but continuing exit checks.",
+            "Max concurrent positions reached (%d). Counting %d filled and %d pending-buy slots (total open positions: %d). Suppressing new entries but continuing exit checks.",
             MAX_CONCURRENT_POSITIONS,
-            len(counted_positions),
+            len(counted_symbols),
+            pending_slots,
             len(open_positions),
         )
 
@@ -2003,6 +2035,12 @@ def run_scan_once():
             if sig == "buy" and ticker not in open_symbols:
                 if not can_open_new_positions:
                     logging.debug("Skipping %s buy — concurrency ceiling reached", ticker)
+                    continue
+                if ticker in pending_buy_symbols:
+                    logging.info(
+                        "Skipping %s buy — existing open BUY order still pending fill.",
+                        ticker,
+                    )
                     continue
                 # sizing
                 qty = calc_shares_for_risk(equity, available_funds, MAX_RISK_PCT, price, STOP_PCT)

@@ -28,7 +28,9 @@ import time
 from pathlib import Path
 from typing import Iterable, Iterator, List, Sequence, Set, Tuple
 
-DEFAULT_IGNORES = {'.git', '__pycache__', '.pytest_cache', 'logs', 'state'}
+DEFAULT_IGNORES = {'.git', '__pycache__', '.pytest_cache', 'logs', 'state', 'auto_state.json'}
+DEFAULT_IGNORED_BASENAMES = {'auto_state.json', 'auto_trade_log.csv'}
+DEFAULT_IGNORED_PREFIXES = {'.auto_state.'}
 
 from watchgod.watcher import DefaultDirWatcher
 
@@ -137,7 +139,16 @@ class _DirWatcher(DefaultDirWatcher):
 
 
 def _is_ignored(path: Path, ignored: Set[Path]) -> bool:
-    return any(path == ignore or ignore in path.parents for ignore in ignored)
+    if any(path == ignore or ignore in path.parents for ignore in ignored):
+        return True
+
+    name = path.name
+    if name in DEFAULT_IGNORED_BASENAMES:
+        return True
+    if any(name.startswith(prefix) for prefix in DEFAULT_IGNORED_PREFIXES):
+        return True
+
+    return False
 
 
 def _watch_changes(
