@@ -1,41 +1,26 @@
-FROM ubuntu:latest
-LABEL authors="wyattmcdonald"
-
-ENTRYPOINT ["top", "-b"]
-# Stage 1: builder — install dependencies
-FROM python:3.11-slim as builder
-
-# system deps for building wheels (add more if your requirements need them)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    gcc \
-    libpq-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /app
-
-# Copy only requirements first to leverage Docker cache
-COPY requirements.txt .
-
-RUN python -m pip install --upgrade pip
-RUN pip install --prefix=/install -r requirements.txt
-
-# Stage 2: runtime — smaller final image
+# Dockerfile
 FROM python:3.11-slim
 
-RUN useradd -m botuser
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+# (Optional) build deps if your wheels need them; remove if not needed
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential gcc libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create an isolated venv that won't be clobbered by the source code mount
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
 WORKDIR /app
-
-# copy requirements and install directly
 COPY requirements.txt .
-RUN python -m pip install --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt
+RUN pip install -U pip && pip install -r requirements.txt
 
-COPY . .
 
-RUN mkdir -p /app/logs && chown -R botuser:botuser /app
+# Make log/state dirs and a non-root user
+RUN useradd -m botuser && mkdir -p /app/logs /app/state && chown -R botuser:botuser /app
 USER botuser
 
-ENV PYTHONUNBUFFERED=1
-
+# Default command; in dev we’ll override with a reloader
 CMD ["python", "auto_trader.py"]

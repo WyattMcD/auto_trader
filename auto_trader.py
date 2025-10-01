@@ -24,6 +24,57 @@ Automated SMA watcher + Alpaca order executor (paper mode by default).
 # ----------------------------
 # CONFIG LOAD, IMPORTS, SANITY
 # ----------------------------
+# auto_trader.py (very top)
+import os, atexit, signal, errno
+
+LOCK_PATH = "/app/state/auto_trader.lock"
+
+def _pid_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError as e:
+        return e.errno == errno.EPERM  # process exists but no permission
+
+def acquire_lock():
+    # make sure state dir exists
+    os.makedirs(os.path.dirname(LOCK_PATH), exist_ok=True)
+
+    # check existing lock
+    if os.path.exists(LOCK_PATH):
+        try:
+            with open(LOCK_PATH, "r") as f:
+                old_pid = int((f.read() or "0").strip())
+        except Exception:
+            old_pid = 0
+
+        # active process? -> exit
+        if old_pid and _pid_running(old_pid):
+            raise SystemExit(f"Another instance is running (pid {old_pid}). Exiting.")
+
+        # stale -> remove
+        try:
+            os.remove(LOCK_PATH)
+        except FileNotFoundError:
+            pass
+
+    # atomically create lock & write our PID
+    fd = os.open(LOCK_PATH, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    with os.fdopen(fd, "w") as f:
+        f.write(str(os.getpid()))
+
+    def _cleanup(*_):
+        try:
+            os.remove(LOCK_PATH)
+        except FileNotFoundError:
+            pass
+
+    atexit.register(_cleanup)
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, lambda *_: (_cleanup(), os._exit(0)))
+
+acquire_lock()
+
 import os
 import time
 import math
