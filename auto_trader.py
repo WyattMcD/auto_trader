@@ -1613,14 +1613,14 @@ def run_scan_once():
 
     counted_positions = [p for p in open_positions if _position_counts_toward_limit(p)]
     open_symbols = set([p.symbol for p in counted_positions])
-    if len(counted_positions) >= MAX_CONCURRENT_POSITIONS:
+    can_open_new_positions = len(counted_positions) < MAX_CONCURRENT_POSITIONS
+    if not can_open_new_positions:
         logging.info(
-            "Max concurrent positions reached (%d). Counting %d qualifying positions (total open positions: %d). Skipping new entries.",
+            "Max concurrent positions reached (%d). Counting %d qualifying positions (total open positions: %d). Suppressing new entries but continuing exit checks.",
             MAX_CONCURRENT_POSITIONS,
             len(counted_positions),
             len(open_positions),
         )
-        return
 
     def pick_top_n_signals(candidates, n=3):
         """
@@ -1776,6 +1776,9 @@ def run_scan_once():
 
             # if buy signal and we don't already have a position in ticker -> consider entry
             if sig == "buy" and ticker not in open_symbols:
+                if not can_open_new_positions:
+                    logging.debug("Skipping %s buy — concurrency ceiling reached", ticker)
+                    continue
                 # sizing
                 qty = calc_shares_for_risk(equity, available_funds, MAX_RISK_PCT, price, STOP_PCT)
                 # sanity: if qty < tiny threshold (e.g., $1 of position) skip
@@ -1867,8 +1870,8 @@ def run_scan_once():
                 counted_positions = [p for p in open_positions if _position_counts_toward_limit(p)]
                 open_symbols = set([p.symbol for p in counted_positions])
                 if len(counted_positions) >= MAX_CONCURRENT_POSITIONS:
-                    logging.info("Reached max concurrent positions after entry.")
-                    break
+                    logging.info("Reached max concurrent positions after entry. Further buys disabled until positions close.")
+                    can_open_new_positions = False
 
             # if sell/exit signal and we already have position -> exit (market sell)
             elif sig == "sell" and ticker in open_symbols:
