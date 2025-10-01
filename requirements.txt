@@ -9,4 +9,5 @@ requests
 python-dotenv
 ta
 watchgod
+watchfiles
 anyio

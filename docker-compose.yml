@@ -7,6 +7,10 @@ services:
     env_file:
       - .env
     volumes:
+      # Bind mount the project so code changes from the host are visible inside
+      # the container without rebuilding the image. This keeps the development
+      # reloader in sync with edits made in an IDE such as PyCharm.
+      - ./:/app
       - ./logs:/app/logs
       - ./state:/app/state
     network_mode: bridge
