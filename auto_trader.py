@@ -91,6 +91,18 @@ def _safe_float_env(name: str, default: float):
         logging.warning("Invalid float for env %s: %r -> using default %s", name, raw, default)
         return float(default)
 
+
+def _int_from_env(name: str, default: int) -> int:
+    """Read an integer environment variable with graceful fallback."""
+    raw = os.getenv(name)
+    if raw is None:
+        return int(default)
+    try:
+        return int(str(raw).strip())
+    except Exception:
+        logging.warning("Invalid int for env %s: %r -> using default %s", name, raw, default)
+        return int(default)
+
 def _get_account_equity(api):
     """
     Return account equity (float). If API call fails, return None.
@@ -166,14 +178,20 @@ logging.info(f"Using Alpaca API base: {API_BASE}")
 logging.info(f"API key present: {bool(API_KEY)}")
 
 # Try to import WATCHLIST from config.py (your file). Fallback to env string.
+CONFIG_MAX_CONCURRENT_POSITIONS = None
 try:
     from config import WATCHLIST as WATCHLIST, IS_PAPER
+    try:
+        from config import MAX_CONCURRENT_POSITIONS as CONFIG_MAX_CONCURRENT_POSITIONS
+    except Exception:
+        CONFIG_MAX_CONCURRENT_POSITIONS = None
 
     logging.info("Loaded WATCHLIST from config.py")
 except Exception as e:
     logging.warning("config.py not found or import failed; falling back to WATCHLIST env. Error: %s", e)
     raw = os.getenv("WATCHLIST", "AAPL,MSFT,AMZN,NVDA,AMD,TSLA,GOOGL,META")
     WATCHLIST = [s.strip().upper() for s in raw.split(",") if s.strip()]
+    CONFIG_MAX_CONCURRENT_POSITIONS = None
 
 # Ensure WATCHLIST is a list
 if isinstance(WATCHLIST, str):
@@ -195,7 +213,24 @@ SCAN_INTERVAL_MINUTES = int(os.getenv("SCAN_INTERVAL_MINUTES", "5"))   # how oft
 MAX_RISK_PCT = float(os.getenv("MAX_RISK_PCT", "0.05"))  # 5% per-trade by default
 STOP_PCT = float(os.getenv("STOP_PCT", "0.06"))          # stop distance for sizing calc
 ACCOUNT_DD_LIMIT = float(os.getenv("ACCOUNT_DD_LIMIT", "0.20"))  # pause if drawdown reached
-MAX_CONCURRENT_POSITIONS = int(os.getenv("MAX_CONCURRENT_POSITIONS", "20"))
+
+config_max_positions = None
+if CONFIG_MAX_CONCURRENT_POSITIONS is not None:
+    try:
+        config_max_positions = int(str(CONFIG_MAX_CONCURRENT_POSITIONS).strip())
+    except Exception:
+        logging.warning(
+            "Invalid MAX_CONCURRENT_POSITIONS in config.py: %r — ignoring.",
+            CONFIG_MAX_CONCURRENT_POSITIONS,
+        )
+
+DEFAULT_MAX_CONCURRENT_POSITIONS = config_max_positions if config_max_positions is not None else 20
+raw_env_max_positions = os.getenv("MAX_CONCURRENT_POSITIONS")
+MAX_CONCURRENT_POSITIONS = _int_from_env(
+    "MAX_CONCURRENT_POSITIONS",
+    DEFAULT_MAX_CONCURRENT_POSITIONS,
+)
+
 COOLDOWN_MINUTES = int(os.getenv("COOLDOWN_MINUTES", "60"))  # don't re-enter same ticker within this window
 ORDER_TYPE = os.getenv("ORDER_TYPE", "market")  # 'market' or 'limit'
 
@@ -209,27 +244,21 @@ if not API_KEY or not API_SECRET:
 # Setup Alpaca client object
 api = REST(API_KEY, API_SECRET, API_BASE, api_version='v2')
 
-SMA_LEN = int(os.getenv("SMA_LEN", "20"))
-SCAN_INTERVAL_MINUTES = int(os.getenv("SCAN_INTERVAL_MINUTES", "5"))   # how often to scan
-MAX_RISK_PCT = float(os.getenv("MAX_RISK_PCT", "0.05"))  # 5% per-trade by default
-STOP_PCT = float(os.getenv("STOP_PCT", "0.06"))          # stop distance for sizing calc
-ACCOUNT_DD_LIMIT = float(os.getenv("ACCOUNT_DD_LIMIT", "0.20"))  # pause if drawdown reached
-MAX_CONCURRENT_POSITIONS = int(os.getenv("MAX_CONCURRENT_POSITIONS", "20"))
-COOLDOWN_MINUTES = int(os.getenv("COOLDOWN_MINUTES", "60"))  # don't re-enter same ticker within this window
-ORDER_TYPE = os.getenv("ORDER_TYPE", "market")  # 'market' or 'limit'
-
-LOG_CSV = os.getenv("TRADE_LOG_CSV", "auto_trade_log.csv")
-STATE_FILE = os.getenv("STATE_FILE", "auto_state.json")
-
-# quick validation
-if not API_KEY or not API_SECRET:
-    raise SystemExit("Missing Alpaca keys in .env (APCA_API_KEY_ID, APCA_API_SECRET_KEY)")
-
-# ----------------------------
-# Setup
-# ----------------------------
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-api = REST(API_KEY, API_SECRET, API_BASE, api_version='v2')
+if raw_env_max_positions is not None:
+    logging.info(
+        "Max concurrent equity positions limit set to %d (from MAX_CONCURRENT_POSITIONS env)",
+        MAX_CONCURRENT_POSITIONS,
+    )
+elif config_max_positions is not None:
+    logging.info(
+        "Max concurrent equity positions limit set to %d (from config.py)",
+        MAX_CONCURRENT_POSITIONS,
+    )
+else:
+    logging.info(
+        "Max concurrent equity positions limit set to %d (internal default)",
+        MAX_CONCURRENT_POSITIONS,
+    )
 
 # load or init state
 if os.path.exists(STATE_FILE):
