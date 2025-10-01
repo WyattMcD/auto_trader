@@ -166,6 +166,7 @@ import time
 import math
 import json
 import logging
+import tempfile
 from datetime import datetime, timedelta, timezone, timezone
 now = datetime.now(timezone.utc)
 from dotenv import load_dotenv
@@ -386,6 +387,9 @@ def _position_counts_toward_limit(position) -> bool:
 
 LOG_CSV = os.getenv("TRADE_LOG_CSV", "auto_trade_log.csv")
 STATE_FILE = os.getenv("STATE_FILE", "auto_state.json")
+ROTATION_PERSIST_INTERVAL = float(os.getenv("ROTATION_PERSIST_INTERVAL", "300"))
+_LAST_SAVED_STATE = None
+_LAST_ROTATION_SAVE = 0.0
 
 # quick validation
 if not API_KEY or not API_SECRET:
@@ -429,6 +433,15 @@ state.setdefault("options_positions", {})   # single-leg option entries keyed by
 state.setdefault("option_spreads", {})      # multi-leg spreads keyed by combined leg symbols
 state.setdefault("rotation", {})            # round-robin cursors (e.g. options watchlist scans)
 
+try:
+    _LAST_SAVED_STATE = json.loads(json.dumps(state, sort_keys=True))
+except Exception:
+    _LAST_SAVED_STATE = None
+else:
+    _LAST_ROTATION_SAVE = time.monotonic()
+
+atexit.register(lambda: save_state(force=True))
+
 # ensure log CSV
 if not os.path.exists(LOG_CSV):
     pd.DataFrame(columns=["timestamp","ticker","action","signal_price","qty","order_id","status","notes","equity","cash"]).to_csv(LOG_CSV, index=False)
@@ -470,9 +483,70 @@ def to_aware_datetime(val):
 # ----------------------------
 # Utility functions
 # ----------------------------
-def save_state():
-    with open(STATE_FILE, "w") as fh:
-        json.dump(state, fh, indent=2)
+def _snapshot_state(obj):
+    try:
+        return json.loads(json.dumps(obj, sort_keys=True))
+    except Exception:
+        logging.exception("Unable to snapshot state for persistence")
+        return None
+
+
+def save_state(*, force: bool = False):
+    """Persist state to disk while avoiding noisy writes."""
+
+    global _LAST_SAVED_STATE, _LAST_ROTATION_SAVE
+
+    snapshot = _snapshot_state(state)
+    if snapshot is None:
+        return
+
+    prior = _LAST_SAVED_STATE
+    rotation_changed = True
+    if prior is not None:
+        rotation_changed = snapshot.get("rotation") != prior.get("rotation")
+
+    if not force and prior is not None:
+        if snapshot == prior:
+            return
+
+        snap_no_rot = dict(snapshot)
+        snap_no_rot.pop("rotation", None)
+        prior_no_rot = dict(prior)
+        prior_no_rot.pop("rotation", None)
+
+        if snap_no_rot == prior_no_rot:
+            now = time.monotonic()
+            if now - _LAST_ROTATION_SAVE < ROTATION_PERSIST_INTERVAL:
+                return
+
+    state_dir = os.path.dirname(os.path.abspath(STATE_FILE)) or "."
+    try:
+        os.makedirs(state_dir, exist_ok=True)
+    except Exception:
+        logging.exception("Failed to ensure state directory %s exists", state_dir)
+        return
+
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=state_dir, prefix=".auto_state.", suffix=".tmp")
+    except Exception:
+        logging.exception("Failed to create temporary file for state save")
+        return
+
+    try:
+        with os.fdopen(fd, "w") as fh:
+            json.dump(snapshot, fh, indent=2)
+        os.replace(tmp_path, STATE_FILE)
+    except Exception:
+        logging.exception("Failed writing state to %s", STATE_FILE)
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+        return
+
+    _LAST_SAVED_STATE = snapshot
+    if rotation_changed or force:
+        _LAST_ROTATION_SAVE = time.monotonic()
 
 def get_account_info():
     """Return basic account metrics while preferring cash over margin."""
@@ -501,10 +575,11 @@ def get_account_info():
     }
 
 def update_peak_equity(equity):
-    peak = state.get("peak_equity") or equity
-    if equity > peak:
+    peak = state.get("peak_equity")
+    if peak is None or equity > peak:
         state["peak_equity"] = equity
-    return state["peak_equity"]
+        return True, equity
+    return False, peak
 
 def account_paused():
     acct = get_account_info()
@@ -1354,7 +1429,6 @@ def run_option_entry_cycle():
         cursor = (cursor + limit) % len(symbols)
         cursor_map[state_key] = cursor
         state["rotation"] = cursor_map
-        save_state()
         return selection
 
     watch_syms = _unique_watch_symbols()
@@ -1643,8 +1717,9 @@ def run_scan_once():
     available_funds = acct.get("available_funds", equity)
 
     # update peak
-    update_peak_equity(equity)
-    save_state()
+    peak_updated, _ = update_peak_equity(equity)
+    if peak_updated:
+        save_state()
 
     # get existing positions count
     open_positions = api.list_positions()
