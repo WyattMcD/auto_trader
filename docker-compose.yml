@@ -9,6 +9,20 @@ services:
         "sh",
         "-c",
         "pip install --disable-pip-version-check -r requirements.txt \u0026\u0026 python scripts/run_with_reloader.py --watch /app --ignore /app/logs --ignore /app/state -- python auto_trader.py",
+    command:
+      [
+        "python",
+        "scripts/run_with_reloader.py",
+        "--watch",
+        "/app",
+        "--ignore",
+        "/app/logs",
+        "--ignore",
+        "/app/state",
+        "--",
+        "python",
+        "auto_trader.py",
+main
       ]
     build: .
     image: wyatt/auto_trader:latest
