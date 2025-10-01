@@ -427,6 +427,7 @@ else:
 # ensure new option-tracking containers exist
 state.setdefault("options_positions", {})   # single-leg option entries keyed by contract symbol
 state.setdefault("option_spreads", {})      # multi-leg spreads keyed by combined leg symbols
+state.setdefault("rotation", {})            # round-robin cursors (e.g. options watchlist scans)
 
 # ensure log CSV
 if not os.path.exists(LOG_CSV):
@@ -1320,13 +1321,43 @@ def run_option_entry_cycle():
     if not ENABLE_OPTIONS:
         return
 
-    watch_syms = []
-    for sym in OPTIONS_UNDERLYINGS + WATCHLIST:
-        if not sym:
-            continue
-        sym = sym.strip().upper()
-        if sym not in watch_syms:
-            watch_syms.append(sym)
+    def _unique_watch_symbols():
+        """Return de-duplicated uppercase symbols from option universe + equity watchlist."""
+        unique = []
+        seen = set()
+        for sym in OPTIONS_UNDERLYINGS + WATCHLIST:
+            if not sym:
+                continue
+            cleaned = sym.strip().upper()
+            if cleaned and cleaned not in seen:
+                seen.add(cleaned)
+                unique.append(cleaned)
+        return unique
+
+    def _round_robin_slice(symbols, limit, state_key):
+        """Return `limit` symbols using a persistent round-robin cursor."""
+        if not symbols:
+            return []
+        try:
+            limit = int(limit) if limit else len(symbols)
+        except Exception:
+            limit = len(symbols)
+        limit = max(1, min(limit, len(symbols)))
+
+        cursor_map = state.setdefault("rotation", {})
+        cursor = int(cursor_map.get(state_key, 0) or 0)
+
+        selection = []
+        for i in range(limit):
+            selection.append(symbols[(cursor + i) % len(symbols)])
+
+        cursor = (cursor + limit) % len(symbols)
+        cursor_map[state_key] = cursor
+        state["rotation"] = cursor_map
+        save_state()
+        return selection
+
+    watch_syms = _unique_watch_symbols()
 
     if not watch_syms:
         return
@@ -1335,7 +1366,11 @@ def run_option_entry_cycle():
     allow_new_spread = open_spreads < SPREADS_MAX_OPEN
 
     # ---- Try spreads first (credit, then debit) ----
-    spread_candidates = watch_syms[:SPREADS_MAX_CANDIDATES_PER_TICK]
+    spread_candidates = _round_robin_slice(
+        watch_syms,
+        SPREADS_MAX_CANDIDATES_PER_TICK,
+        state_key="spread_candidates",
+    )
     if allow_new_spread:
         for sym in spread_candidates:
             try:
@@ -1365,8 +1400,11 @@ def run_option_entry_cycle():
 
     # ---- Fallback: single-leg CSPs ----
     optionable = [sym for sym in watch_syms if _looks_optionable(sym)]
-    limit = OPTIONS_MAX_CANDIDATES_PER_TICK or len(optionable)
-    optionable = optionable[:limit]
+    optionable = _round_robin_slice(
+        optionable,
+        OPTIONS_MAX_CANDIDATES_PER_TICK or len(optionable),
+        state_key="csp_candidates",
+    )
     try:
         account = equity_trader.get_account()
     except Exception:
@@ -1918,6 +1956,12 @@ def run_scan_once():
             logging.exception("Error scanning %s: %s", ticker, e)
             send_slack(f":x: Error scanning {ticker}: {e}")
             continue
+
+    # After processing every ticker, refresh any trailing-stop adjustments.
+    try:
+        update_trailing_stops()
+    except Exception:
+        logging.exception("update_trailing_stops failed at end of scan")
 
 def main_loop():
     logging.info("Starting auto_trader main loop. Watchlist: %s", WATCHLIST)
