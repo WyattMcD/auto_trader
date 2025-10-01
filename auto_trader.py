@@ -30,11 +30,34 @@ import os, atexit, signal, errno
 LOCK_PATH = "/app/state/auto_trader.lock"
 
 def _pid_running(pid: int) -> bool:
+    """Return True if *pid* looks like a live auto_trader process."""
+
+    if pid <= 0:
+        return False
+
     try:
         os.kill(pid, 0)
-        return True
-    except OSError as e:
-        return e.errno == errno.EPERM  # process exists but no permission
+    except OSError as exc:  # process definitely gone
+        if exc.errno in {errno.ESRCH, errno.ENOENT}:
+            return False
+        if exc.errno != errno.EPERM:  # treat unknown errors as not running
+            return False
+
+    cmdline_path = f"/proc/{pid}/cmdline"
+    try:
+        with open(cmdline_path, "rb") as fh:
+            raw = fh.read().decode("utf-8", "ignore")
+    except FileNotFoundError:
+        return False
+    except Exception:
+        # If we cannot read the cmdline we conservatively assume the process is
+        # unrelated so that a stale lock does not block startup forever.
+        return False
+
+    if not raw:
+        return False
+
+    return "auto_trader.py" in raw
 
 def acquire_lock():
     # make sure state dir exists
@@ -1842,23 +1865,5 @@ def main_loop():
             logging.exception("Top-level error in main loop: %s", e)
             send_slack(f":bangbang: Top-level error in auto_trader: {e}")
         time.sleep(SCAN_INTERVAL_MINUTES * 60)
-# single instance guard (simple lockfile)
-lockfile = "/app/state/auto_trader.lock"
-try:
-    if os.path.exists(lockfile):
-        logging.error("Lockfile %s exists — another instance may be running. Exiting.", lockfile)
-        raise SystemExit(1)
-    # create lockfile
-    os.makedirs("/app/state", exist_ok=True)
-    with open(lockfile, "w") as fh:
-        fh.write(str(os.getpid()))
-except Exception:
-    logging.exception("Failed to create lockfile; continuing without lock.")
-# remember to remove lockfile on clean shutdown:
-# at the end or during signal handler: os.remove(lockfile)
 if __name__ == "__main__":
     main_loop()
-
-
-def handle_signal():
-    return None
