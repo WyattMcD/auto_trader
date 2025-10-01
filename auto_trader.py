@@ -2170,6 +2170,33 @@ def run_scan_once():
                 if not pos:
                     continue
                 qty = float(pos.qty)
+                if qty <= 0:
+                    logging.info(
+                        "Skipping exit for %s — position reports non-positive quantity (%s).",
+                        ticker,
+                        qty,
+                    )
+                    state["positions"].pop(ticker, None)
+                    save_state()
+                    open_symbols.discard(ticker)
+                    counted_symbols.discard(ticker)
+                    continue
+
+                pdata = state.get("positions", {}).get(ticker, {})
+                # Cancel any resting protective orders so the shares are available for exit.
+                for field, label in (("stop_order_id", "stop"), ("tp_order_id", "take-profit")):
+                    oid = pdata.get(field)
+                    if not oid:
+                        continue
+                    try:
+                        api.cancel_order(oid)
+                        logging.info("Cancelled %s order %s for %s prior to exit.", label, oid, ticker)
+                        pdata.pop(field, None)
+                        state["positions"][ticker] = pdata
+                        save_state()
+                    except Exception:
+                        logging.exception("Failed to cancel %s order %s for %s prior to exit.", label, oid, ticker)
+
                 try:
                     order = api.submit_order(symbol=ticker, qty=qty, side='sell', type='market', time_in_force='day')
                     order_id = getattr(order, "id", None)
@@ -2198,6 +2225,20 @@ def run_scan_once():
                         "equity": equity,
                         "cash": acct["cash"]
                     })
+                except APIError as e:
+                    message = str(e).lower()
+                    if "insufficient qty available" in message:
+                        logging.warning(
+                            "Exit order for %s skipped — Alpaca reports insufficient quantity available. Clearing local state.",
+                            ticker,
+                        )
+                        state["positions"].pop(ticker, None)
+                        save_state()
+                        open_symbols.discard(ticker)
+                        counted_symbols.discard(ticker)
+                        continue
+                    logging.exception("Failed to place exit order %s: %s", ticker, e)
+                    continue
                 except Exception as e:
                     logging.exception("Failed to place exit order %s: %s", ticker, e)
                     continue
