@@ -26,6 +26,7 @@ OPTIONS_MAX_REL_SPREAD = 0.15          # (ask-bid)/ask <= 15%
 OPTIONS_MIN_DTE      = 1               # ≥ 7 days to expiry
 OPTIONS_MAX_DTE      = 90              # ≤ 30 days (short dated)
 # --- Risk & exposure ---
+MAX_CONCURRENT_POSITIONS = int(os.getenv("MAX_CONCURRENT_POSITIONS", "20"))  # equity slots
 MAX_OPEN_CSP_POSITIONS = 8             # total short puts at once
 MAX_BP_AT_RISK         = 0.25          # 25% of buying power at risk for CSPs
 TAKE_PROFIT_PCT        = 0.50          # buy-to-close when 50% of credit captured
