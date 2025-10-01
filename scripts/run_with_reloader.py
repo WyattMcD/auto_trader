@@ -1,6 +1,14 @@
 """Run a command with automatic reload when project files change.
 
 This helper is designed for Docker development workflows where code on the host
+codex/fix-missing-watchfiles-module-error-dq2o5o
+is bind-mounted into the container (see ``docker-compose.yml``). Without the
+bind mount, Docker will continue to run the version of the code baked into the
+image which makes file changes from an IDE invisible to the reloader.  Change
+detection defaults to :mod:`watchgod` which works out-of-the-box inside the
+provided Docker image, while :mod:`watchfiles` is also installed for
+compatibility with other tooling that prefers its CLI.
+
 codex/fix-missing-watchfiles-module-error-cc0ljm
 is bind-mounted into the container (see ``docker-compose.yml``). Without the
 bind mount, Docker will continue to run the version of the code baked into the
@@ -9,12 +17,13 @@ script intentionally avoids the optional ``watchfiles`` dependency which has
 caused installation issues in some environments.  Instead we rely solely on
 :mod:`watchgod`, a pure-Python watcher that is already part of our dependency
 set and works out-of-the-box inside the provided Docker image.
-=======
+
 is bind-mounted into the container.  It intentionally avoids the optional
 ``watchfiles`` dependency which has caused installation issues in some
 environments.  Instead we rely solely on :mod:`watchgod`, a pure-Python watcher
 that is already part of our dependency set and works out-of-the-box inside the
 provided Docker image.
+main
 main
 
 Example usage from the repository root::
