@@ -8,6 +8,7 @@ services:
       - sh
       - -c
       - |
+codex/fix-invalid-command-key-in-docker-compose.override.yml-nu9vkc
           pip install --disable-pip-version-check -r requirements.txt && \
           python scripts/run_with_reloader.py \
             --watch /app \
@@ -17,6 +18,13 @@ services:
             --ignore /app/docker-compose.override.yml \
             --ignore /app/requirements.txt \
             -- python auto_trader.py
+        pip install --disable-pip-version-check -r requirements.txt && \
+        python scripts/run_with_reloader.py \
+          --watch /app \
+          --ignore /app/logs \
+          --ignore /app/state \
+          -- python auto_trader.py
+main
     # Mount the whole repo into /app so edits in PyCharm appear in the container
     volumes:
       - ./:/app:delegated
