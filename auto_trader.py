@@ -195,7 +195,7 @@ SCAN_INTERVAL_MINUTES = int(os.getenv("SCAN_INTERVAL_MINUTES", "5"))   # how oft
 MAX_RISK_PCT = float(os.getenv("MAX_RISK_PCT", "0.05"))  # 5% per-trade by default
 STOP_PCT = float(os.getenv("STOP_PCT", "0.06"))          # stop distance for sizing calc
 ACCOUNT_DD_LIMIT = float(os.getenv("ACCOUNT_DD_LIMIT", "0.20"))  # pause if drawdown reached
-MAX_CONCURRENT_POSITIONS = int(os.getenv("MAX_CONCURRENT_POSITIONS", "10"))
+MAX_CONCURRENT_POSITIONS = int(os.getenv("MAX_CONCURRENT_POSITIONS", "20"))
 COOLDOWN_MINUTES = int(os.getenv("COOLDOWN_MINUTES", "60"))  # don't re-enter same ticker within this window
 ORDER_TYPE = os.getenv("ORDER_TYPE", "market")  # 'market' or 'limit'
 
@@ -214,7 +214,7 @@ SCAN_INTERVAL_MINUTES = int(os.getenv("SCAN_INTERVAL_MINUTES", "5"))   # how oft
 MAX_RISK_PCT = float(os.getenv("MAX_RISK_PCT", "0.05"))  # 5% per-trade by default
 STOP_PCT = float(os.getenv("STOP_PCT", "0.06"))          # stop distance for sizing calc
 ACCOUNT_DD_LIMIT = float(os.getenv("ACCOUNT_DD_LIMIT", "0.20"))  # pause if drawdown reached
-MAX_CONCURRENT_POSITIONS = int(os.getenv("MAX_CONCURRENT_POSITIONS", "10"))
+MAX_CONCURRENT_POSITIONS = int(os.getenv("MAX_CONCURRENT_POSITIONS", "20"))
 COOLDOWN_MINUTES = int(os.getenv("COOLDOWN_MINUTES", "60"))  # don't re-enter same ticker within this window
 ORDER_TYPE = os.getenv("ORDER_TYPE", "market")  # 'market' or 'limit'
 
