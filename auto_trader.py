@@ -1445,18 +1445,16 @@ def run_scan_once():
             # cooldown check
             last = state["last_signal"].get(ticker)
             if last:
-                last_time = datetime.fromisoformat(last.get("time")) if last.get("time") else None
-                now = datetime.now(timezone.utc)
-                last_scan_iso = state.get("last_scan")  # or however you store it per symbol
-                # convert to aware datetime safely
-                last_time = to_aware_datetime(last_scan_iso)
-
-                if last_time and (now - last_time) < timedelta(minutes=COOLDOWN_MINUTES):
-                    # still in cooldown — skip scanning/processing this symbol
-                    return  # or continue depending on enclosing loop
-
-                    # skip until cooldown passes
-                    continue
+                last_time = to_aware_datetime(last.get("time"))
+                if last_time:
+                    now = datetime.now(timezone.utc)
+                    if (now - last_time) < timedelta(minutes=COOLDOWN_MINUTES):
+                        logging.debug(
+                            "Skipping %s — still within %s minute cooldown window",
+                            ticker,
+                            COOLDOWN_MINUTES,
+                        )
+                        continue
 
             # --- Multi-strategy evaluation (prefers RSI+SMA if it has a signal) ---
             sma_res = compute_sma_signal(ticker)
