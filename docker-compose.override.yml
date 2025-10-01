@@ -2,7 +2,14 @@
 version: "3.9"
 services:
   auto_trader:
-    command: ["sh","-lc","python -m watchfiles --filter python --debounce 800 --ignore-paths /app/state --ignore-paths /app/logs --ignore-paths /app/.git --ignore-paths /app/__pycache__ --ignore-glob '*.log' 'python auto_trader.py' /app"]
+    # Keep the container's virtualenv in sync with local requirements before launching
+    # the autoreloader so dependency updates are available immediately during dev.
+    command:
+      [
+        "sh",
+        "-c",
+        "pip install --disable-pip-version-check -r requirements.txt \u0026\u0026 python scripts/run_with_reloader.py --watch /app --ignore /app/logs --ignore /app/state -- python auto_trader.py",
+      ]
     # Mount the whole repo into /app so edits in PyCharm appear in the container
     volumes:
       - ./:/app:delegated

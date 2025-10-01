@@ -1,38 +1,20 @@
 """Run a command with automatic reload when project files change.
 
-This helper is designed for Docker development workflows where code on the host
-codex/fix-missing-watchfiles-module-error-dq2o5o
-is bind-mounted into the container (see ``docker-compose.yml``). Without the
-bind mount, Docker will continue to run the version of the code baked into the
-image which makes file changes from an IDE invisible to the reloader.  Change
-detection defaults to :mod:`watchgod` which works out-of-the-box inside the
-provided Docker image, while :mod:`watchfiles` is also installed for
-compatibility with other tooling that prefers its CLI.
-
-codex/fix-missing-watchfiles-module-error-cc0ljm
-is bind-mounted into the container (see ``docker-compose.yml``). Without the
-bind mount, Docker will continue to run the version of the code baked into the
-image which makes file changes from an IDE invisible to the reloader.  The
-script intentionally avoids the optional ``watchfiles`` dependency which has
-caused installation issues in some environments.  Instead we rely solely on
-:mod:`watchgod`, a pure-Python watcher that is already part of our dependency
-set and works out-of-the-box inside the provided Docker image.
-
-is bind-mounted into the container.  It intentionally avoids the optional
-``watchfiles`` dependency which has caused installation issues in some
-environments.  Instead we rely solely on :mod:`watchgod`, a pure-Python watcher
-that is already part of our dependency set and works out-of-the-box inside the
-provided Docker image.
-main
-main
+This helper is designed for Docker-based development where the project
+directory on the host machine is bind-mounted into the running container.
+Without the bind mount Docker would continue to execute the version of the code
+baked into the image, which means file edits performed in an IDE would never
+trigger a reload.  The script intentionally relies solely on :mod:`watchgod`
+because it is already a pure-Python dependency listed in ``requirements.txt``
+and works without any native build tooling.
 
 Example usage from the repository root::
 
     python scripts/run_with_reloader.py --watch /app --ignore /app/logs \
         --ignore /app/state -- python auto_trader.py
 
-When a watched file changes we terminate the running command and start it again.
-The script exits cleanly when it receives ``SIGINT``/``SIGTERM``.
+When a watched file changes we terminate the running command and start it
+again.  The script exits cleanly when it receives ``SIGINT``/``SIGTERM``.
 """
 from __future__ import annotations
 
@@ -129,7 +111,7 @@ class _ProcessRunner:
 
 
 def _normalise_paths(paths: Iterable[str]) -> List[Path]:
-    result = []
+    result: List[Path] = []
     for raw in paths:
         path = Path(raw).expanduser()
         if not path.is_absolute():
@@ -140,23 +122,48 @@ def _normalise_paths(paths: Iterable[str]) -> List[Path]:
     return result
 
 
+class _DirWatcher(DefaultDirWatcher):
+    """Directory watcher that honours absolute ignore paths."""
+
+    def __init__(self, root_path: Path, ignored_paths: Set[Path]):
+        self._ignored = {path.resolve() for path in ignored_paths}
+        super().__init__(root_path)
+
+    def should_watch_dir(self, entry) -> bool:  # type: ignore[override]
+        if not super().should_watch_dir(entry):
+            return False
+        path = Path(entry.path).resolve()
+        return not any(path == ignored or ignored in path.parents for ignored in self._ignored)
+
+
+def _is_ignored(path: Path, ignored: Set[Path]) -> bool:
+    return any(path == ignore or ignore in path.parents for ignore in ignored)
+
+
 def _watch_changes(
     watch_paths: Sequence[Path],
-    ignored: Set[str],
+    ignored: Set[Path],
     stop_event: threading.Event,
     interval: float,
 ) -> Iterator[Set[Tuple[object, str]]]:
     """Yield file changes as they occur using :mod:`watchgod` polling."""
 
     LOGGER.info("Using watchgod for change detection.")
-    watchers = [DefaultDirWatcher(str(path), ignored_paths=set(ignored)) for path in watch_paths]
+    watchers = [_DirWatcher(path, ignored) for path in watch_paths]
 
     while not stop_event.is_set():
         changes: Set[Tuple[object, str]] = set()
         for watcher in watchers:
             changes |= watcher.check()
         if changes:
-            yield changes
+            filtered: Set[Tuple[object, str]] = set()
+            for change, raw_path in changes:
+                resolved = Path(raw_path).resolve()
+                if _is_ignored(resolved, ignored):
+                    continue
+                filtered.add((change, str(resolved)))
+            if filtered:
+                yield filtered
         stop_event.wait(interval)
 
 
@@ -175,8 +182,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         command = [sys.executable, "auto_trader.py"]
 
     watch_paths = _normalise_paths(args.watch) or [Path.cwd()]
-    ignored_paths = {str(path) for path in _normalise_paths(DEFAULT_IGNORES)}
-    ignored_paths.update(str(path) for path in _normalise_paths(args.ignore))
+    ignored_paths = set(_normalise_paths(DEFAULT_IGNORES))
+    ignored_paths.update(_normalise_paths(args.ignore))
 
     runner = _ProcessRunner(command)
     stop_event = threading.Event()

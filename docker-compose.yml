@@ -1,7 +1,15 @@
 version: '3.9'
 services:
   auto_trader:
-    command: ["sh","-lc","watchmedo auto-restart --patterns='*.py' --ignore-patterns='*.log;*/.git/*;*/__pycache__/*;*/logs/*;*/state/*' --recursive -- python auto_trader.py"]
+    # Install any new Python dependencies and then start the dev reloader. This makes
+    # sure libraries added to requirements.txt become available without forcing a
+    # docker image rebuild on every change.
+    command:
+      [
+        "sh",
+        "-c",
+        "pip install --disable-pip-version-check -r requirements.txt \u0026\u0026 python scripts/run_with_reloader.py --watch /app --ignore /app/logs --ignore /app/state -- python auto_trader.py",
+      ]
     build: .
     image: wyatt/auto_trader:latest
     restart: unless-stopped
