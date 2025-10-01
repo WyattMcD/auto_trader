@@ -5,25 +5,15 @@ services:
     # Keep the container's virtualenv in sync with local requirements before launching
     # the autoreloader so dependency updates are available immediately during dev.
     command:
-      [
-        "sh",
-        "-c",
-        "pip install --disable-pip-version-check -r requirements.txt \u0026\u0026 python scripts/run_with_reloader.py --watch /app --ignore /app/logs --ignore /app/state -- python auto_trader.py",
-    command:
-      [
-        "python",
-        "scripts/run_with_reloader.py",
-        "--watch",
-        "/app",
-        "--ignore",
-        "/app/logs",
-        "--ignore",
-        "/app/state",
-        "--",
-        "python",
-        "auto_trader.py",
-main
-      ]
+      - sh
+      - -c
+      - |
+          pip install --disable-pip-version-check -r requirements.txt && \
+          python scripts/run_with_reloader.py \
+            --watch /app \
+            --ignore /app/logs \
+            --ignore /app/state \
+            -- python auto_trader.py
     # Mount the whole repo into /app so edits in PyCharm appear in the container
     volumes:
       - ./:/app:delegated
