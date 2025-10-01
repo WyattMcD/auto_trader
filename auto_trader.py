@@ -25,11 +25,13 @@ Automated SMA watcher + Alpaca order executor (paper mode by default).
 # CONFIG LOAD, IMPORTS, SANITY
 # ----------------------------
 # auto_trader.py (very top)
-import os, atexit, signal, errno
+import os, atexit, signal, errno, uuid
+from typing import Optional
 
 LOCK_PATH = "/app/state/auto_trader.lock"
+LOCK_ENV_KEY = "AUTO_TRADER_LOCK_ID"
 
-def _pid_running(pid: int) -> bool:
+def _pid_running(pid: int, *, lock_id: Optional[str] = None) -> bool:
     """Return True if *pid* looks like a live auto_trader process."""
 
     if pid <= 0:
@@ -57,7 +59,47 @@ def _pid_running(pid: int) -> bool:
     if not raw:
         return False
 
-    return "auto_trader.py" in raw
+    argv = [part for part in raw.split("\0") if part]
+    if not argv:
+        return False
+
+    # The dev autoreloader executes ``python scripts/run_with_reloader.py -- ...`` and
+    # therefore has ``auto_trader.py`` in its argument list even though it is not the
+    # process we want to guard against.  To avoid treating the reloader itself as a
+    # live trading instance we only consider a PID active when ``auto_trader.py`` is
+    # the script being executed directly (the second argument to the Python
+    # interpreter) and the reloader helper is absent from the command line.
+    try:
+        script_arg = argv[1]
+    except IndexError:
+        script_arg = ""
+
+    script_name = os.path.basename(script_arg)
+    if not script_name.endswith("auto_trader.py"):
+        return False
+
+    if any("run_with_reloader.py" in os.path.basename(arg) for arg in argv):
+        return False
+
+    if lock_id:
+        env_path = f"/proc/{pid}/environ"
+        expected = f"{LOCK_ENV_KEY}={lock_id}"
+        try:
+            with open(env_path, "rb") as fh:
+                env_raw = fh.read().decode("utf-8", "ignore")
+        except FileNotFoundError:
+            return False
+        except Exception:
+            return False
+
+        if not env_raw:
+            return False
+
+        entries = [part for part in env_raw.split("\0") if part]
+        if expected not in entries:
+            return False
+
+    return True
 
 def acquire_lock():
     # make sure state dir exists
@@ -67,12 +109,25 @@ def acquire_lock():
     if os.path.exists(LOCK_PATH):
         try:
             with open(LOCK_PATH, "r") as f:
-                old_pid = int((f.read() or "0").strip())
+                raw = (f.read() or "").strip()
         except Exception:
             old_pid = 0
+            old_lock_id = None
+        else:
+            old_lock_id = None
+            if ":" in raw:
+                pid_part, lock_part = raw.split(":", 1)
+            else:
+                pid_part, lock_part = raw, ""
+            try:
+                old_pid = int((pid_part or "0").strip())
+            except Exception:
+                old_pid = 0
+            lock_part = lock_part.strip()
+            old_lock_id = lock_part or None
 
         # active process? -> exit
-        if old_pid and _pid_running(old_pid):
+        if old_pid and _pid_running(old_pid, lock_id=old_lock_id):
             raise SystemExit(f"Another instance is running (pid {old_pid}). Exiting.")
 
         # stale -> remove
@@ -82,9 +137,12 @@ def acquire_lock():
             pass
 
     # atomically create lock & write our PID
+    lock_id = uuid.uuid4().hex
+    os.environ[LOCK_ENV_KEY] = lock_id
+
     fd = os.open(LOCK_PATH, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
     with os.fdopen(fd, "w") as f:
-        f.write(str(os.getpid()))
+        f.write(f"{os.getpid()}:{lock_id}")
 
     def _cleanup(*_):
         try:
