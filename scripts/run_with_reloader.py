@@ -1,11 +1,11 @@
 """Run a command with automatic reload when project files change.
 
 This helper is designed for Docker development workflows where code on the host
-is bind-mounted into the container.  It does *not* require the third-party
-``watchfiles`` package which has caused installation issues for some users.
-Instead we rely on :mod:`watchgod`, a pure-Python watcher that is already part
-of our dependency set.  If ``watchfiles`` happens to be installed we will use it
-for slightly faster change detection, but it is completely optional.
+is bind-mounted into the container.  It intentionally avoids the optional
+``watchfiles`` dependency which has caused installation issues in some
+environments.  Instead we rely solely on :mod:`watchgod`, a pure-Python watcher
+that is already part of our dependency set and works out-of-the-box inside the
+provided Docker image.
 
 Example usage from the repository root::
 
@@ -28,11 +28,6 @@ from pathlib import Path
 from typing import Iterable, Iterator, List, Sequence, Set, Tuple
 
 DEFAULT_IGNORES = {'.git', '__pycache__', '.pytest_cache', 'logs', 'state'}
-
-try:  # Prefer watchfiles when available for better performance
-    from watchfiles import watch as watchfiles_watch  # type: ignore
-except ImportError:  # pragma: no cover - optional dependency
-    watchfiles_watch = None  # type: ignore
 
 from watchgod.watcher import DefaultDirWatcher
 
@@ -132,22 +127,9 @@ def _watch_changes(
     stop_event: threading.Event,
     interval: float,
 ) -> Iterator[Set[Tuple[object, str]]]:
-    """Yield file changes as they occur.
+    """Yield file changes as they occur using :mod:`watchgod` polling."""
 
-    When ``watchfiles`` is available we use its blocking iterator which supports
-    cooperative cancellation via ``stop_event``.  Otherwise we fall back to a
-    polling implementation based on :class:`watchgod.watcher.DefaultDirWatcher`.
-    """
-
-    if watchfiles_watch is not None:
-        LOGGER.info("Using watchfiles for change detection.")
-        # ``watchfiles.watch`` accepts multiple paths.  We convert everything to
-        # strings to avoid surprises with Path objects from ``pathlib``.
-        str_paths = [str(path) for path in watch_paths]
-        yield from watchfiles_watch(*str_paths, stop_event=stop_event)
-        return
-
-    LOGGER.info("Using watchgod fallback for change detection.")
+    LOGGER.info("Using watchgod for change detection.")
     watchers = [DefaultDirWatcher(str(path), ignored_paths=set(ignored)) for path in watch_paths]
 
     while not stop_event.is_set():
