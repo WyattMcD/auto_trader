@@ -1,17 +1,22 @@
-version: "3.9"
+version: '3.9'
 services:
   auto_trader:
     build: .
     image: wyatt/auto_trader:latest
-    restart: unless-stopped    # restart policy; "always" or "unless-stopped"
+    restart: unless-stopped
     env_file:
       - .env
     volumes:
-      - ./logs:/app/logs           # persist logs to host
-      - ./state:/app/state         # if you keep runtime state on disk
+      - ./logs:/app/logs
+      - ./state:/app/state
     network_mode: bridge
-    # if you need host networking on mac, note Docker Desktop handles it differently
     deploy:
       resources:
         limits:
           memory: 1G
+    # Development command that restarts automatically when files change
+    command:
+      - python
+      - scripts/run_with_reloader.py
+    environment:
+      PYTHONUNBUFFERED: '1'
