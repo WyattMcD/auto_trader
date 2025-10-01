@@ -1,7 +1,20 @@
 version: '3.9'
 services:
   auto_trader:
-    command: ["sh","-lc","watchmedo auto-restart --patterns='*.py' --ignore-patterns='*.log;*/.git/*;*/__pycache__/*;*/logs/*;*/state/*' --recursive -- python auto_trader.py"]
+    command:
+      [
+        "python",
+        "scripts/run_with_reloader.py",
+        "--watch",
+        "/app",
+        "--ignore",
+        "/app/logs",
+        "--ignore",
+        "/app/state",
+        "--",
+        "python",
+        "auto_trader.py",
+      ]
     build: .
     image: wyatt/auto_trader:latest
     restart: unless-stopped
