@@ -234,6 +234,19 @@ MAX_CONCURRENT_POSITIONS = _int_from_env(
 COOLDOWN_MINUTES = int(os.getenv("COOLDOWN_MINUTES", "60"))  # don't re-enter same ticker within this window
 ORDER_TYPE = os.getenv("ORDER_TYPE", "market")  # 'market' or 'limit'
 
+COUNT_OPTION_POSITIONS_TOWARD_MAX = (
+    os.getenv("COUNT_OPTION_POSITIONS_TOWARD_MAX", "false").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+
+
+def _position_counts_toward_limit(position) -> bool:
+    """Return True if the position should count toward the concurrency ceiling."""
+    asset_class = str(getattr(position, "asset_class", "") or "").lower()
+    if not COUNT_OPTION_POSITIONS_TOWARD_MAX and asset_class in {"option", "us_option"}:
+        return False
+    return True
+
 LOG_CSV = os.getenv("TRADE_LOG_CSV", "auto_trade_log.csv")
 STATE_FILE = os.getenv("STATE_FILE", "auto_state.json")
 
@@ -258,6 +271,13 @@ else:
     logging.info(
         "Max concurrent equity positions limit set to %d (internal default)",
         MAX_CONCURRENT_POSITIONS,
+    )
+
+if COUNT_OPTION_POSITIONS_TOWARD_MAX:
+    logging.info("Option positions will count toward the max concurrent positions limit.")
+else:
+    logging.info(
+        "Option positions will be ignored when enforcing the max concurrent positions limit."
     )
 
 # load or init state
@@ -1453,9 +1473,16 @@ def run_scan_once():
 
     # get existing positions count
     open_positions = api.list_positions()
-    open_symbols = set([p.symbol for p in open_positions])
-    if len(open_positions) >= MAX_CONCURRENT_POSITIONS:
-        logging.info("Max concurrent positions reached (%d). Skipping new entries.", MAX_CONCURRENT_POSITIONS)
+
+    counted_positions = [p for p in open_positions if _position_counts_toward_limit(p)]
+    open_symbols = set([p.symbol for p in counted_positions])
+    if len(counted_positions) >= MAX_CONCURRENT_POSITIONS:
+        logging.info(
+            "Max concurrent positions reached (%d). Counting %d qualifying positions (total open positions: %d). Skipping new entries.",
+            MAX_CONCURRENT_POSITIONS,
+            len(counted_positions),
+            len(open_positions),
+        )
         return
 
     def pick_top_n_signals(candidates, n=3):
@@ -1700,15 +1727,18 @@ def run_scan_once():
                 })
                 # refresh positions and potentially throttle more entries
                 open_positions = api.list_positions()
-                open_symbols = set([p.symbol for p in open_positions])
-                if len(open_positions) >= MAX_CONCURRENT_POSITIONS:
+                counted_positions = [p for p in open_positions if _position_counts_toward_limit(p)]
+                open_symbols = set([p.symbol for p in counted_positions])
+                if len(counted_positions) >= MAX_CONCURRENT_POSITIONS:
                     logging.info("Reached max concurrent positions after entry.")
                     break
 
             # if sell/exit signal and we already have position -> exit (market sell)
             elif sig == "sell" and ticker in open_symbols:
                 # place market sell for quantity we hold
-                pos = next((p for p in open_positions if p.symbol == ticker), None)
+                pos = next((p for p in counted_positions if p.symbol == ticker), None)
+                if pos is None:
+                    pos = next((p for p in open_positions if p.symbol == ticker), None)
                 if not pos:
                     continue
                 qty = float(pos.qty)
