@@ -241,6 +241,66 @@ def _int_from_env(name: str, default: int) -> int:
         logging.warning("Invalid int for env %s: %r -> using default %s", name, raw, default)
         return int(default)
 
+
+def _unwrap_pandas_scalar(value):
+    """Return a plain scalar from pandas objects without raising FutureWarning."""
+    if pd is None:
+        return value
+
+    if isinstance(value, pd.DataFrame):
+        if value.empty:
+            return None
+        # prefer the last column if multiple are present
+        try:
+            return _unwrap_pandas_scalar(value.iloc[-1])
+        except Exception:
+            return None
+
+    if isinstance(value, pd.Series):
+        if value.empty:
+            return None
+        try:
+            return _unwrap_pandas_scalar(value.iloc[-1])
+        except Exception:
+            return None
+
+    return value
+
+
+def _coerce_to_float(value):
+    """Best-effort conversion to float that tolerates pandas wrappers."""
+    value = _unwrap_pandas_scalar(value)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _last_close_price(history):
+    """Extract the most recent close from a yfinance dataframe as a float."""
+    if history is None or getattr(history, "empty", True):
+        return None
+
+    try:
+        close = history["Close"]
+    except Exception:
+        return None
+
+    if pd is not None and isinstance(close, pd.DataFrame):
+        if close.empty:
+            return None
+        # take the last column for multi-index frames
+        close = close.iloc[:, -1]
+
+    try:
+        last_value = close.iloc[-1]
+    except Exception:
+        last_value = close
+
+    return _coerce_to_float(last_value)
+
 def _get_account_equity(api):
     """
     Return account equity (float). If API call fails, return None.
@@ -604,7 +664,13 @@ def fetch_history_yf(ticker, lookback_days=60, interval="1d"):
         # yfinance can sometimes accept a list or a string; make sure we pass a string
         symbol = str(ticker).strip().upper()
         # request slightly more days to ensure we have SMA window
-        df = yf.download(symbol, period=f"{lookback_days}d", interval=interval, progress=False)
+        df = yf.download(
+            symbol,
+            period=f"{lookback_days}d",
+            interval=interval,
+            progress=False,
+            auto_adjust=False,
+        )
         if df is None or df.empty:
             return None
 
@@ -744,7 +810,13 @@ def compute_atr_stop_pct(ticker, atr_period=14, atr_multiplier=None):
         atr_multiplier = float(atr_multiplier or os.getenv("STOP_ATR_MULTIPLIER", "1.5"))
 
         symbol = str(ticker).strip().upper()
-        df = yf.download(symbol, period="60d", interval="1d", progress=False)
+        df = yf.download(
+            symbol,
+            period="60d",
+            interval="1d",
+            progress=False,
+            auto_adjust=False,
+        )
         if df is None or df.empty:
             logging.debug("compute_atr_stop_pct: no data for %s", symbol)
             return None
@@ -823,8 +895,14 @@ def place_market_buy_and_attach_stops(ticker, qty, entry_price_hint=None,
         price_for_sizing = float(entry_price_hint)
     else:
         try:
-            recent = yf.download(ticker, period="2d", interval="1d", progress=False)
-            price_for_sizing = float(recent["Close"].iloc[-1]) if recent is not None and not recent.empty else None
+            recent = yf.download(
+                ticker,
+                period="2d",
+                interval="1d",
+                progress=False,
+                auto_adjust=False,
+            )
+            price_for_sizing = _last_close_price(recent)
         except Exception:
             price_for_sizing = None
 
@@ -882,8 +960,14 @@ def place_market_buy_and_attach_stops(ticker, qty, entry_price_hint=None,
                 # Alpaca supports submitting a LIMIT order with order_class=bracket; for market+bracket, we use a limit slightly above market as fallback.
                 # We'll try submitting a MARKET buy without bracket first — many accounts require bracket on limit orders only.
                 # Recommended approach: submit limit bracket using a small slippage buffer from recent price.
-                recent = yf.download(ticker, period="2d", interval="1d", progress=False)
-                last_close = float(recent["Close"].iloc[-1]) if recent is not None and not recent.empty else entry_price_hint or None
+                recent = yf.download(
+                    ticker,
+                    period="2d",
+                    interval="1d",
+                    progress=False,
+                    auto_adjust=False,
+                )
+                last_close = _last_close_price(recent) or entry_price_hint or None
                 # compute a small limit, e.g., +0.5% above last close to approximate market but allow bracket
                 if last_close:
                     limit_price = round(last_close * 1.005, 2)
@@ -975,8 +1059,18 @@ def place_market_buy_and_attach_stops(ticker, qty, entry_price_hint=None,
 
         if not fill_price:
             logging.info("Proceeding without precise fill_price; using last close fallback.")
-            recent = yf.download(ticker, period="2d", interval="1d", progress=False)
-            fill_price = float(recent["Close"].iloc[-1]) if recent is not None and not recent.empty else entry_price_hint or fill_price or 0
+            recent = yf.download(
+                ticker,
+                period="2d",
+                interval="1d",
+                progress=False,
+                auto_adjust=False,
+            )
+            fallback_price = _last_close_price(recent)
+            if fallback_price is not None:
+                fill_price = fallback_price
+            else:
+                fill_price = entry_price_hint or fill_price or 0
 
         stop_price = round(fill_price * (1.0 - float(stop_pct)), 2)
         tp_price = round(fill_price * (1.0 + float(take_profit_pct)), 2)
@@ -1028,14 +1122,26 @@ def place_market_buy_and_attach_stops(ticker, qty, entry_price_hint=None,
             # fetch a recent price to decide whether to enable trailing immediately
             recent = None
             try:
-                recent = yf.download(ticker, period="1d", interval="1m", progress=False)
+                recent = yf.download(
+                    ticker,
+                    period="1d",
+                    interval="1m",
+                    progress=False,
+                    auto_adjust=False,
+                )
             except Exception:
                 # fallback to daily close if intraday fetch fails
-                recent = yf.download(ticker, period="2d", interval="1d", progress=False)
+                recent = yf.download(
+                    ticker,
+                    period="2d",
+                    interval="1d",
+                    progress=False,
+                    auto_adjust=False,
+                )
 
             current_price = None
             if recent is not None and not recent.empty:
-                current_price = float(recent["Close"].iloc[-1])
+                current_price = _last_close_price(recent)
             else:
                 current_price = fill_price or (limit_price if 'limit_price' in locals() else None) or 0.0
 
@@ -1650,7 +1756,13 @@ def run_scan_once():
 
                 # fetch recent minute bars to find the high since entry
                 try:
-                    df = yf.download(ticker, period="5d", interval="1m", progress=False)
+                    df = yf.download(
+                        ticker,
+                        period="5d",
+                        interval="1m",
+                        progress=False,
+                        auto_adjust=False,
+                    )
                     if df is None or df.empty:
                         continue
                     # only consider bars since entry_time if available
