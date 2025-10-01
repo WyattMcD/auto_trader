@@ -1859,6 +1859,28 @@ def run_scan_once():
     pending_buy_skips = 0
 
     pending_buy_symbols = set()
+
+    def rebuild_concurrency_snapshot(*, refresh_positions: bool = False) -> None:
+        """Recompute concurrency bookkeeping after fills, exits, or cancellations."""
+
+        nonlocal open_positions
+        nonlocal counted_positions
+        nonlocal counted_symbols
+        nonlocal open_symbols
+        nonlocal pending_slots
+        nonlocal active_slots
+        nonlocal can_open_new_positions
+
+        if refresh_positions:
+            open_positions = api.list_positions()
+
+        counted_positions = [p for p in open_positions if _position_counts_toward_limit(p)]
+        counted_symbols = {p.symbol for p in counted_positions}
+        open_symbols = set(counted_symbols)
+        open_symbols.update(pending_buy_symbols)
+        pending_slots = sum(1 for sym in pending_buy_symbols if sym not in counted_symbols)
+        active_slots = len(counted_symbols) + pending_slots
+        can_open_new_positions = active_slots < MAX_CONCURRENT_POSITIONS
     try:
         open_orders = api.list_orders(status="open", limit=200, nested=True)
     except Exception:
@@ -1874,6 +1896,8 @@ def run_scan_once():
             and str(getattr(order, "side", "")).lower() == "buy"
             and _order_counts_toward_limit(order)
         }
+
+    rebuild_concurrency_snapshot()
 
     open_symbols.update(pending_buy_symbols)
 
@@ -2213,6 +2237,8 @@ def run_scan_once():
                     state["last_signal"][ticker] = {"time": datetime.now(timezone.utc).isoformat(), "signal": "sell", "price": price}
                     state["positions"].pop(ticker, None)
                     save_state()
+                    pending_buy_symbols.discard(ticker)
+                    rebuild_concurrency_snapshot(refresh_positions=True)
                     log_trade_row({
                         "timestamp": datetime.now(timezone.utc).isoformat(),
                         "ticker": ticker,
@@ -2234,6 +2260,9 @@ def run_scan_once():
                         )
                         state["positions"].pop(ticker, None)
                         save_state()
+                        pending_buy_symbols.discard(ticker)
+                        rebuild_concurrency_snapshot(refresh_positions=True)
+
                         open_symbols.discard(ticker)
                         counted_symbols.discard(ticker)
                         continue
