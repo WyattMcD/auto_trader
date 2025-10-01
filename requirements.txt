@@ -11,3 +11,4 @@ ta
 watchgod
 watchfiles
 anyio
+watchfiles
