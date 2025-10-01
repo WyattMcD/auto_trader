@@ -100,6 +100,11 @@ def _pid_running(pid: int, *, lock_id: Optional[str] = None) -> bool:
             return False
 
     return True
+  
+    if script_arg.endswith("auto_trader.py") and "scripts/run_with_reloader.py" not in argv:
+        return True
+
+    return False
 
 def acquire_lock():
     # make sure state dir exists
