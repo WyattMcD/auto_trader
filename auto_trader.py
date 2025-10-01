@@ -2064,6 +2064,12 @@ def run_scan_once():
                     )
                     pending_buy_skips += 1
                     continue
+                if ticker in pending_buy_symbols:
+                    logging.info(
+                        "Skipping %s buy — existing open BUY order still pending fill.",
+                        ticker,
+                    )
+                    continue
                 # sizing
                 qty = calc_shares_for_risk(equity, available_funds, MAX_RISK_PCT, price, STOP_PCT)
                 # sanity: if qty < tiny threshold (e.g., $1 of position) skip
