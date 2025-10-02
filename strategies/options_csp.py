@@ -1,8 +1,14 @@
 # strategies/options_csp.py
-from datetime import date, timedelta
-from config import (OPTIONS_TARGET_DELTA, OPTIONS_MIN_OI, OPTIONS_MAX_REL_SPREAD,
-                    OPTIONS_MIN_DTE, OPTIONS_MAX_DTE)
+from datetime import date
+from config import (
+    OPTIONS_TARGET_DELTA,
+    OPTIONS_MIN_OI,
+    OPTIONS_MAX_REL_SPREAD,
+    OPTIONS_MIN_DTE,
+    OPTIONS_MAX_DTE,
+)
 import yfinance as yf
+
 
 def _parse_occ(sym: str):
     # OCC: ROOT + YYMMDD + C/P + strike*1000 (8 digits)
@@ -10,18 +16,21 @@ def _parse_occ(sym: str):
         right = sym[-9]
         yy, mm, dd = sym[-15:-13], sym[-13:-11], sym[-11:-9]
         strike = int(sym[-8:]) / 1000.0
-        exp = date(int("20"+yy), int(mm), int(dd))
+        exp = date(int("20" + yy), int(mm), int(dd))
         return right, exp, strike
     except Exception:
         return None, None, None
+
 
 def _good_snapshot(snap):
     q = getattr(snap, "latest_quote", None)
     return bool(q and q.ask_price and q.bid_price and q.ask_price > 0)
 
+
 def _rel_spread(snap):
     q = snap.latest_quote
     return (q.ask_price - q.bid_price) / q.ask_price
+
 
 def pick_csp_intent(od, underlying: str):
     snaps = od.chain_snapshots(underlying)  # snapshots with greeks, quotes, OI
@@ -42,7 +51,7 @@ def pick_csp_intent(od, underlying: str):
             continue
 
         greeks = getattr(s, "greeks", None)
-        delta  = abs(getattr(greeks, "delta", 0) or 0)
+        delta = abs(getattr(greeks, "delta", 0) or 0)
         if not (lo <= delta <= hi):
             continue
 
@@ -67,6 +76,47 @@ def pick_csp_intent(od, underlying: str):
     mid = (q.bid_price + q.ask_price) / 2
     limit = round(max(mid * 0.98, 0.05), 2)  # SELL credit: slightly below mid is safer
 
+    greeks = getattr(pick, "greeks", None)
+    delta = abs(getattr(greeks, "delta", 0) or 0)
+    oi = getattr(pick, "open_interest", 0) or 0
+    rel_spread = _rel_spread(pick)
+    credit_dollars = round(limit * 100, 2)
+    tp_price = round(limit * 0.50, 2)
+    sl_price = round(limit * 2.0, 2)
+    exp_date = _parse_occ(pick.symbol)[1]
+    dte_pick = (exp_date - date.today()).days if exp_date else dte
+
+    meta = {
+        "strategy": "cash_secured_put",
+        "why": (
+            f"Δ={delta:.2f} within target {lo:.2f}-{hi:.2f}, DTE={dte_pick}d, OI={oi}, "
+            f"rel.spread={rel_spread:.1%}"
+        ),
+        "thesis": (
+            "Sell put in target delta window with healthy volume/spread to collect credit "
+            "while obligating collateral at the strike."
+        ),
+        "underlying": underlying,
+        "delta": delta,
+        "delta_band": (lo, hi),
+        "dte": dte_pick,
+        "open_interest": oi,
+        "relative_spread": rel_spread,
+        "limit_price": limit,
+        "credit_dollars": credit_dollars,
+        "take_profit_price": tp_price,
+        "stop_loss_price": sl_price,
+        "plan": {
+            "entry": f"Sell {pick.symbol} @ ${limit:.2f} (~${credit_dollars:.2f} credit)",
+            "take_profit": (
+                f"Buy-to-close if premium decays to ${tp_price:.2f} or less (≈50% of credit)"
+            ),
+            "stop_loss": (
+                f"Buy-to-close if premium widens to ${sl_price:.2f} or more (≈200% of credit)"
+            ),
+        },
+    }
+
     return {
         "asset_class": "option",
         "symbol": pick.symbol,
@@ -75,15 +125,14 @@ def pick_csp_intent(od, underlying: str):
         "qty": 1,
         "limit_price": limit,
         "tif": "day",
-        "meta": {
-            "why": f"CSP ~{int(abs(getattr(getattr(pick,'greeks',None),'delta',0))*100)}Δ,"
-                   f" DTE={(date.fromisoformat(str(_parse_occ(pick.symbol)[1]))-date.today()).days}"
-        }
+        "strategy": "cash_secured_put",
+        "meta": meta,
     }
 
+
 def exit_rules_for_csp(snapshot_entry_price: float, current_snap):
-    """
-    Given the entry credit and current snapshot, decide if we BTC.
+    """Given the entry credit and current snapshot, decide if we BTC.
+
     TP: 50% of credit
     SL: 2x credit (loss)
     """

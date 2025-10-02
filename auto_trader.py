@@ -1271,6 +1271,202 @@ def record_order_reason(order_obj, reason: str, ticker: str, meta: dict = None):
         logging.exception("Failed to record order reason for %s", ticker)
 
 
+def _fmt_dollars(value):
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return None
+    return f"${num:,.2f}"
+
+
+def _humanize_strategy(name: str) -> str:
+    if not name:
+        return ""
+    return str(name).replace("_", " ").title()
+
+
+def _intent_primary_symbol(intent: dict) -> str:
+    meta = intent.get("meta") or {}
+    asset = str(intent.get("asset_class") or "").lower()
+    if asset == "option":
+        symbol = intent.get("symbol") or "?"
+        underlying = meta.get("underlying")
+        return f"{symbol} ({underlying})" if underlying else symbol
+    if asset == "option_spread":
+        underlying = intent.get("underlying") or meta.get("underlying") or "spread"
+        expiry = intent.get("expiry") or meta.get("expiry")
+        return f"{underlying} {expiry}" if expiry else underlying
+    return intent.get("symbol") or meta.get("underlying") or "portfolio"
+
+
+def _infer_intent_stage(intent: dict) -> str:
+    asset = str(intent.get("asset_class") or "").lower()
+    side = str(intent.get("side") or "").lower()
+    meta = intent.get("meta") or {}
+    if asset == "option":
+        if side == "sell":
+            return "entry"
+        if side == "buy":
+            return "exit"
+    elif asset == "option_spread":
+        if meta.get("reason"):
+            return "exit"
+        return "entry"
+    else:
+        if side == "buy":
+            return "entry"
+        if side == "sell":
+            return "exit"
+    return "trade"
+
+
+def _plan_lines(meta: dict) -> list:
+    lines = []
+    plan = meta.get("plan") if isinstance(meta.get("plan"), dict) else None
+    if plan:
+        mapping = {
+            "take_profit": "TP",
+            "stop_loss": "SL",
+            "adjustment": "Adjust",
+        }
+        for key, label in mapping.items():
+            text = plan.get(key)
+            if text:
+                lines.append(f"{label}: {text}")
+    else:
+        tp = _fmt_dollars(meta.get("take_profit_price"))
+        if tp:
+            lines.append(f"TP trigger ≈ {tp}")
+        sl = _fmt_dollars(meta.get("stop_loss_price"))
+        if sl:
+            lines.append(f"SL trigger ≈ {sl}")
+    return lines
+
+
+def _build_intent_summary(intent: dict, *, stage: str = None):
+    meta = intent.get("meta") or {}
+    stage_label = stage or _infer_intent_stage(intent)
+    header = f"{stage_label.title()} intent for {_intent_primary_symbol(intent)}"
+    lines = []
+
+    strategy = intent.get("strategy") or meta.get("strategy")
+    if strategy:
+        lines.append(f"Strategy: {_humanize_strategy(strategy)}")
+
+    asset = str(intent.get("asset_class") or "equity").lower()
+    if asset == "option":
+        qty = intent.get("qty", 1)
+        side = str(intent.get("side", "")).upper()
+        order_type = str(intent.get("type", "market")).upper()
+        action = f"Action: {side} {qty} {intent.get('symbol')}"
+        if order_type:
+            action += f" ({order_type})"
+        if str(intent.get("type", "")).lower() == "limit":
+            price_fmt = _fmt_dollars(intent.get("limit_price"))
+            if price_fmt:
+                action += f" @ {price_fmt}"
+        lines.append(action)
+    elif asset == "option_spread":
+        entry_bits = []
+        strat_name = _humanize_strategy(intent.get("strategy") or meta.get("strategy") or "spread")
+        if strat_name:
+            entry_bits.append(strat_name)
+        underlying = intent.get("underlying") or meta.get("underlying")
+        if underlying:
+            entry_bits.append(f"on {underlying}")
+        expiry = intent.get("expiry") or meta.get("expiry")
+        if expiry:
+            entry_bits.append(f"exp {expiry}")
+        net_limit = intent.get("net_limit")
+        try:
+            net_limit = float(net_limit)
+        except (TypeError, ValueError):
+            net_limit = None
+        if net_limit is not None:
+            dollars = _fmt_dollars(abs(net_limit) * 100)
+            if dollars:
+                entry_bits.append("(" + ("credit" if net_limit >= 0 else "debit") + f" ≈ {dollars})")
+        if entry_bits:
+            lines.append("Action: " + " ".join(entry_bits))
+    else:
+        qty = intent.get("qty")
+        side = str(intent.get("side", "")).upper()
+        symbol = intent.get("symbol") or meta.get("underlying")
+        order_type = str(intent.get("type", "market")).upper()
+        action = f"Action: {side} {qty} {symbol}"
+        if order_type:
+            action += f" ({order_type})"
+        if str(intent.get("type", "")).lower() == "limit":
+            price_fmt = _fmt_dollars(intent.get("limit_price"))
+            if price_fmt:
+                action += f" @ {price_fmt}"
+        lines.append(action)
+
+    if meta.get("why"):
+        lines.append(f"Why: {meta['why']}")
+    thesis = meta.get("thesis")
+    if thesis and thesis != meta.get("why"):
+        lines.append(f"Thesis: {thesis}")
+
+    context_bits = []
+    delta = meta.get("delta")
+    if isinstance(delta, (int, float)):
+        band = meta.get("delta_band")
+        if isinstance(band, (tuple, list)) and len(band) == 2:
+            context_bits.append(f"Δ={delta:.2f} (target {band[0]:.2f}-{band[1]:.2f})")
+        else:
+            context_bits.append(f"Δ={delta:.2f}")
+    dte_val = meta.get("dte")
+    if isinstance(dte_val, (int, float)):
+        context_bits.append(f"DTE={int(dte_val)}d")
+    oi = meta.get("open_interest")
+    if isinstance(oi, (int, float)) and oi:
+        context_bits.append(f"OI={int(oi)}")
+    rel_spread = meta.get("relative_spread")
+    if isinstance(rel_spread, (int, float)):
+        context_bits.append(f"Bid/ask spread={rel_spread:.1%}")
+    if meta.get("max_loss"):
+        max_loss_fmt = _fmt_dollars(meta.get("max_loss"))
+        if max_loss_fmt:
+            context_bits.append(f"Max loss {max_loss_fmt}")
+    max_gain_fmt = _fmt_dollars(meta.get("max_gain"))
+    if max_gain_fmt:
+        context_bits.append(f"Max gain {max_gain_fmt}")
+    if context_bits:
+        lines.append("Context: " + ", ".join(context_bits))
+
+    plan_lines = _plan_lines(meta)
+    if plan_lines:
+        lines.append("Plan: " + "; ".join(plan_lines))
+
+    reason = meta.get("reason")
+    if reason:
+        lines.append(f"Trigger: {reason}")
+
+    return header, lines
+
+
+def _explain_intent(intent: dict, *, stage: str = None):
+    header, lines = _build_intent_summary(intent, stage=stage)
+    details = "\n".join(lines)
+    if details:
+        logging.info("%s\n%s", header, details)
+    else:
+        logging.info("%s", header)
+    message = header
+    if details:
+        message += "\n" + details
+    try:
+        send_slack(f":mag: {message}")
+    except Exception:
+        logging.debug("send_slack failed while sharing trade explanation.")
+
+
+def _execute_with_explanation(intent, equity_trader, opt_trader, *, stage: str = None):
+    _explain_intent(intent, stage=stage)
+    return execute_intent(intent, equity_trader, opt_trader)
+
+
 def place_order_with_reason(api, symbol, qty, side, ord_type="market", tif="day",
                             reason="signal", reason_detail="", extra_meta=None,
                             **kwargs):
@@ -1397,12 +1593,18 @@ def _record_option_entry(intent):
                 entry_price = float(intent.get("limit_price") or 0.0)
             except Exception:
                 entry_price = None
+        entry_meta = intent.get("meta") or {}
         state["options_positions"][intent["symbol"]] = {
             "side": intent.get("side"),
             "qty": int(intent.get("qty", 1) or 1),
             "entry_price": entry_price,
             "opened": now_iso,
-            "strategy": intent.get("strategy") or intent.get("meta", {}).get("why", "option")
+            "strategy": intent.get("strategy") or entry_meta.get("strategy") or entry_meta.get("why", "option"),
+            "why": entry_meta.get("why"),
+            "thesis": entry_meta.get("thesis") or entry_meta.get("why"),
+            "plan": entry_meta.get("plan"),
+            "take_profit_price": entry_meta.get("take_profit_price"),
+            "stop_loss_price": entry_meta.get("stop_loss_price"),
         }
         return True
 
@@ -1451,20 +1653,24 @@ def _record_option_entry(intent):
             entry_debit = max(0.0, long_price - short_price)
 
     spread_key = _spread_state_key(legs)
+    entry_meta = intent.get("meta") or {}
     state["option_spreads"][spread_key] = {
         "strategy": strategy,
         "legs": legs,
         "entry_credit": entry_credit,
         "entry_debit": entry_debit,
         "width": width,
-        "opened": now_iso
+        "opened": now_iso,
+        "meta": entry_meta,
+        "plan": entry_meta.get("plan"),
+        "thesis": entry_meta.get("thesis") or entry_meta.get("why"),
     }
     return True
 
 
 def _submit_option_intent(intent):
     try:
-        resp = execute_intent(intent, equity_trader, opt_trader)
+        resp = _execute_with_explanation(intent, equity_trader, opt_trader, stage="entry")
     except Exception:
         logging.exception("Failed to submit option intent: %s", intent)
         return False
@@ -1664,6 +1870,16 @@ def monitor_option_exits():
         if not decision:
             continue
         action, reason = decision
+        close_meta = {
+            "reason": reason,
+            "strategy": meta.get("strategy", "csp"),
+            "why": meta.get("why"),
+            "thesis": meta.get("thesis"),
+            "plan": meta.get("plan"),
+            "take_profit_price": meta.get("take_profit_price"),
+            "stop_loss_price": meta.get("stop_loss_price"),
+            "entry_price": entry_price,
+        }
         close_intent = {
             "asset_class": "option",
             "symbol": sym,
@@ -1671,10 +1887,10 @@ def monitor_option_exits():
             "type": "market",
             "qty": meta.get("qty", 1),
             "tif": "day",
-            "meta": {"reason": reason, "strategy": meta.get("strategy", "csp")}
+            "meta": close_meta,
         }
         try:
-            execute_intent(close_intent, equity_trader, opt_trader)
+            _execute_with_explanation(close_intent, equity_trader, opt_trader, stage="exit")
             state["options_positions"].pop(sym, None)
             save_state()
             logging.info("Closed option %s via %s", sym, reason)
@@ -1730,15 +1946,24 @@ def monitor_option_exits():
             }
             for leg in legs
         ]
+        stored_meta = meta.get("meta") or {}
+        exit_meta = {
+            "reason": reason,
+            "strategy": strategy,
+            "plan": meta.get("plan") or stored_meta.get("plan"),
+            "thesis": meta.get("thesis") or stored_meta.get("thesis"),
+            "why": stored_meta.get("why"),
+            "max_loss": stored_meta.get("max_loss") or meta.get("max_loss"),
+        }
         exit_intent = {
             "asset_class": "option_spread",
             "strategy": strategy,
             "legs": exit_legs,
             "tif": "day",
-            "meta": {"reason": reason}
+            "meta": exit_meta,
         }
         try:
-            execute_intent(exit_intent, equity_trader, opt_trader)
+            _execute_with_explanation(exit_intent, equity_trader, opt_trader, stage="exit")
             state["option_spreads"].pop(key, None)
             save_state()
             logging.info("Closed %s via %s", strategy, reason)
@@ -2055,7 +2280,7 @@ def run_scan_once():
             def main_tick():
                 intents = run_strategies()
                 for intent in intents:
-                    execute_intent(intent, equity_trader, opt_trader)
+                    _execute_with_explanation(intent, equity_trader, opt_trader)
 
             strategy_evaluations = []
             if sma_res:
