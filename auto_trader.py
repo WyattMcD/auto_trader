@@ -2013,6 +2013,7 @@ def monitor_option_exits():
 # Main scanning / execution loop
 # ----------------------------
 def run_scan_once():
+    global equity_trader, opt_trader
     def update_trailing_stops():
         """
         Called each scan: for each state position with trail_active True,
@@ -2240,7 +2241,6 @@ def run_scan_once():
             from options.data import OptionsData
             from options.orders import OptionsTrader
             from strategies.options_cash_puts import screen_cash_secured_put
-            from config import ENABLE_OPTIONS
 
             # init once
             od = OptionsData(API_KEY, API_SECRET, paper=IS_PAPER)

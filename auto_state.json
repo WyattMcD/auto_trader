@@ -1,124 +1,541 @@
 {
+  "last_scan": "2025-10-02T05:37:56.074071+00:00",
   "last_signal": {
-    "NFLX": {
-      "time": "2025-09-22T14:43:56.194171+00:00",
-      "signal": "sell",
-      "price": 1220.18017578125
-    },
-    "MA": {
-      "time": "2025-09-19T03:11:44.687601",
-      "signal": "sell",
-      "price": 586.0499877929688
-    },
-    "V": {
-      "time": "2025-09-19T03:11:45.224921",
-      "signal": "sell",
-      "price": 338.17999267578125
-    },
-    "MRNA": {
-      "time": "2025-09-18T04:16:08.144800",
-      "signal": "buy",
-      "price": 25.0
-    },
-    "NVDA": {
-      "time": "2025-09-19T03:11:37.326484",
-      "signal": "buy",
-      "price": 176.24000549316406
-    },
     "AMD": {
-      "time": "2025-09-22T14:43:58.946140+00:00",
+      "price": 160.8350067138672,
       "signal": "buy",
-      "price": 160.8350067138672
-    },
-    "CRM": {
-      "time": "2025-09-22T14:44:01.299225+00:00",
-      "signal": "buy",
-      "price": 248.42999267578125
-    },
-    "PFE": {
-      "time": "2025-09-23T13:58:21.818105+00:00",
-      "signal": "sell",
-      "price": 24.13050079345703
-    },
-    "XOM": {
-      "time": "2025-09-23T13:58:14.055136+00:00",
-      "signal": "buy",
-      "price": 113.92500305175781,
-      "strategy": "rsi_sma",
-      "score": 0.11083755330228896
-    },
-    "CVX": {
-      "time": "2025-09-23T13:58:16.027172+00:00",
-      "signal": "buy",
-      "price": 159.1678009033203,
-      "strategy": "rsi_sma",
-      "score": 0.09656635871710943
+      "time": "2025-09-22T14:43:58.946140+00:00"
     },
     "COP": {
-      "time": "2025-09-23T13:58:17.888664+00:00",
-      "signal": "buy",
       "price": 94.7699966430664,
-      "strategy": "rsi_sma",
-      "score": 0.034385349059392195
-    },
-    "XLE": {
-      "time": "2025-09-23T13:58:41.529271+00:00",
+      "score": 0.034385349059392195,
       "signal": "buy",
-      "price": 89.54499816894531,
       "strategy": "rsi_sma",
-      "score": 0.14495643733043415
-    }
-  },
-  "positions": {
-    "MRNA": {
-      "entry_time": "2025-09-18T04:16:08.144846",
-      "qty": 400,
-      "order_id": "3f6e50ea-7bdf-49af-9f51-d629b49e5987"
-    },
-    "NVDA": {
-      "entry_time": "2025-09-19T03:11:37.326561",
-      "qty": 28,
-      "order_id": "410ebd6b-2773-4d39-9764-77036f60c326"
-    },
-    "AMD": {
-      "entry_time": "2025-09-22T14:43:58.946156+00:00",
-      "qty": 31,
-      "order_id": "4f108e72-609b-48b9-8272-7ecfb7a8fc7d"
+      "time": "2025-09-23T13:58:17.888664+00:00"
     },
     "CRM": {
-      "entry_time": "2025-09-22T14:44:01.299252+00:00",
-      "qty": 20,
-      "order_id": "d7d4d7d2-95d1-4944-96e0-93f3581a3edb"
-    },
-    "XOM": {
-      "entry_time": "2025-09-23T13:58:14.055142+00:00",
-      "qty": 43,
-      "order_id": null,
-      "strategy": "rsi_sma",
-      "score": 0.11083755330228896
+      "price": 248.42999267578125,
+      "signal": "buy",
+      "time": "2025-09-22T14:44:01.299225+00:00"
     },
     "CVX": {
-      "entry_time": "2025-09-23T13:58:16.027181+00:00",
-      "qty": 31,
-      "order_id": null,
+      "price": 159.1678009033203,
+      "score": 0.09656635871710943,
+      "signal": "buy",
       "strategy": "rsi_sma",
-      "score": 0.09656635871710943
+      "time": "2025-09-23T13:58:16.027172+00:00"
+    },
+    "GOOGL": {
+      "price": 244.89999389648438,
+      "score": 0.19581833173790322,
+      "signal": "buy",
+      "strategy": "rsi_sma",
+      "time": "2025-10-02T01:03:05.145308+00:00"
+    },
+    "MA": {
+      "price": 586.0499877929688,
+      "signal": "sell",
+      "time": "2025-09-19T03:11:44.687601"
+    },
+    "MRNA": {
+      "price": 25.0,
+      "signal": "buy",
+      "time": "2025-09-18T04:16:08.144800"
+    },
+    "NFLX": {
+      "price": 1220.18017578125,
+      "signal": "sell",
+      "time": "2025-09-22T14:43:56.194171+00:00"
+    },
+    "NVDA": {
+      "price": 176.24000549316406,
+      "signal": "buy",
+      "time": "2025-09-19T03:11:37.326484"
+    },
+    "ORCL": {
+      "price": 289.010009765625,
+      "score": 0.05721455764871208,
+      "signal": "buy",
+      "strategy": "rsi_sma",
+      "time": "2025-10-02T02:41:40.798534+00:00"
+    },
+    "PFE": {
+      "price": 24.13050079345703,
+      "signal": "sell",
+      "time": "2025-09-23T13:58:21.818105+00:00"
+    },
+    "V": {
+      "price": 347.8299865722656,
+      "score": 0.09540924218540782,
+      "signal": "buy",
+      "strategy": "rsi_sma",
+      "time": "2025-10-02T03:11:21.328859+00:00"
+    },
+    "XLE": {
+      "price": 89.54499816894531,
+      "score": 0.14495643733043415,
+      "signal": "buy",
+      "strategy": "rsi_sma",
+      "time": "2025-09-23T13:58:41.529271+00:00"
+    },
+    "XLF": {
+      "price": 53.38999938964844,
+      "signal": "sell",
+      "time": "2025-10-01T21:08:19.355622+00:00"
+    },
+    "XOM": {
+      "price": 113.92500305175781,
+      "score": 0.11083755330228896,
+      "signal": "buy",
+      "strategy": "rsi_sma",
+      "time": "2025-09-23T13:58:14.055136+00:00"
+    }
+  },
+  "option_spreads": {},
+  "options_positions": {},
+  "orders": {
+    "1d2727b1-0b74-4aa1-bde4-ff272f54f18b": {
+      "client_order_id": "bot:rs=signal_mean_reversi:t=V:ts=1759352779:acd5aa",
+      "meta": {
+        "entry_hint": null
+      },
+      "reason": "signal:mean_reversion",
+      "submitted_at": 1759352779.4499142,
+      "ticker": "V"
+    },
+    "3a568f68-d493-4b02-bbb5-8aa4068287ce": {
+      "client_order_id": "bot:rs=signal_mean_reversi:t=ORCL:ts=1759361002:a6c19c",
+      "meta": {
+        "entry_hint": null
+      },
+      "reason": "signal:mean_reversion",
+      "submitted_at": 1759361002.4552622,
+      "ticker": "ORCL"
+    },
+    "3a9c5744-61c9-441b-b6f5-5497a90b70a6": {
+      "client_order_id": "bot:rs=signal_mean_reversi:t=GOOGL:ts=1759352477:ee539f",
+      "meta": {
+        "entry_hint": null
+      },
+      "reason": "signal:mean_reversion",
+      "submitted_at": 1759352477.5961976,
+      "ticker": "GOOGL"
+    },
+    "5c744902-ad16-4d5d-b51b-352de673de7b": {
+      "client_order_id": "bot:rs=signal_mean_reversi:t=GOOGL:ts=1759352372:3bb2ee",
+      "meta": {
+        "entry_hint": null
+      },
+      "reason": "signal:mean_reversion",
+      "submitted_at": 1759352372.2404613,
+      "ticker": "GOOGL"
+    },
+    "5f68810a-abbd-4597-9c68-274d9dba61dc": {
+      "client_order_id": "bot:rs=signal_mean_reversi:t=V:ts=1759352804:9a8fe9",
+      "meta": {
+        "entry_hint": null
+      },
+      "reason": "signal:mean_reversion",
+      "submitted_at": 1759352804.306306,
+      "ticker": "V"
+    },
+    "77e08e8f-105d-4a09-8d98-7f8a0c217c27": {
+      "client_order_id": "bot:rs=signal_mean_reversi:t=V:ts=1759352724:4324d1",
+      "meta": {
+        "entry_hint": null
+      },
+      "reason": "signal:mean_reversion",
+      "submitted_at": 1759352725.003201,
+      "ticker": "V"
+    },
+    "7f1904f9-9c3f-40de-88d7-035eae95e5c6": {
+      "client_order_id": "bot:rs=signal_mean_reversi:t=ORCL:ts=1759372902:627d71",
+      "meta": {
+        "entry_hint": null
+      },
+      "reason": "signal:mean_reversion",
+      "submitted_at": 1759372902.3722315,
+      "ticker": "ORCL"
+    },
+    "7f89045a-ccb0-4bea-aed3-2dab8deb86ec": {
+      "client_order_id": "bot:rs=signal_mean_reversi:t=GOOGL:ts=1759352500:4ed2d1",
+      "meta": {
+        "entry_hint": null
+      },
+      "reason": "signal:mean_reversion",
+      "submitted_at": 1759352500.9718158,
+      "ticker": "GOOGL"
+    },
+    "7fa659d6-bb08-463c-bb40-d150003d7be4": {
+      "client_order_id": "bot:rs=signal_mean_reversi:t=V:ts=1759352754:0bf863",
+      "meta": {
+        "entry_hint": null
+      },
+      "reason": "signal:mean_reversion",
+      "submitted_at": 1759352754.421489,
+      "ticker": "V"
+    },
+    "84cc6aa4-1057-49d7-bb15-9a62edd3705f": {
+      "client_order_id": "bot:rs=signal_mean_reversi:t=GOOGL:ts=1759352333:a3d7f9",
+      "meta": {
+        "entry_hint": null
+      },
+      "reason": "signal:mean_reversion",
+      "submitted_at": 1759352333.2075512,
+      "ticker": "GOOGL"
+    },
+    "864dc417-5c6a-40c4-b00b-4ba679c34e60": {
+      "client_order_id": "bot:rs=signal_mean_reversi:t=V:ts=1759352691:11e66c",
+      "meta": {
+        "entry_hint": null
+      },
+      "reason": "signal:mean_reversion",
+      "submitted_at": 1759352692.0238554,
+      "ticker": "V"
+    },
+    "88280ce5-b6ba-40ac-a7f0-de7d4c173968": {
+      "client_order_id": "bot:rs=signal_mean_reversi:t=ORCL:ts=1759352577:64474d",
+      "meta": {
+        "entry_hint": null
+      },
+      "reason": "signal:mean_reversion",
+      "submitted_at": 1759352577.1279094,
+      "ticker": "ORCL"
+    },
+    "906f169d-dce2-42f8-8a8f-e886f316ec8c": {
+      "client_order_id": "bot:rs=signal_mean_reversi:t=V:ts=1759352837:c4b7e1",
+      "meta": {
+        "entry_hint": null
+      },
+      "reason": "signal:mean_reversion",
+      "submitted_at": 1759352837.7114727,
+      "ticker": "V"
+    },
+    "97b602ae-3fd9-40f8-a165-f19721220cec": {
+      "client_order_id": "bot:rs=signal_mean_reversi:t=GOOGL:ts=1759360962:e07971",
+      "meta": {
+        "entry_hint": null
+      },
+      "reason": "signal:mean_reversion",
+      "submitted_at": 1759360963.0403883,
+      "ticker": "GOOGL"
+    },
+    "abb0fc1f-561c-450f-b8f4-d9a9d27dd5ec": {
+      "client_order_id": "bot:rs=signal_mean_reversi:t=V:ts=1759374682:63164b",
+      "meta": {
+        "entry_hint": null
+      },
+      "reason": "signal:mean_reversion",
+      "submitted_at": 1759374682.8248312,
+      "ticker": "V"
+    },
+    "ac6aa1a0-2dff-4279-a6fe-79e2b6c52872": {
+      "client_order_id": "bot:rs=signal_mean_reversi:t=GOOGL:ts=1759366986:d5166e",
+      "meta": {
+        "entry_hint": null
+      },
+      "reason": "signal:mean_reversion",
+      "submitted_at": 1759366986.7623537,
+      "ticker": "GOOGL"
+    },
+    "addb4759-bc80-4eee-a77c-f6361caa3821": {
+      "client_order_id": "bot:rs=signal_mean_reversi:t=V:ts=1759352632:cf9709",
+      "meta": {
+        "entry_hint": null
+      },
+      "reason": "signal:mean_reversion",
+      "submitted_at": 1759352632.487392,
+      "ticker": "V"
+    },
+    "c13e52e7-ca01-4204-9fde-b6bd8bb17b62": {
+      "client_order_id": "bot:rs=signal_mean_reversi:t=ORCL:ts=1759352604:28bd8e",
+      "meta": {
+        "entry_hint": null
+      },
+      "reason": "signal:mean_reversion",
+      "submitted_at": 1759352604.5284922,
+      "ticker": "ORCL"
+    },
+    "d3a6b1c7-0721-4e1d-bd68-05d42e914eec": {
+      "client_order_id": "bot:rs=signal_mean_reversi:t=ORCL:ts=1759352544:493962",
+      "meta": {
+        "entry_hint": null
+      },
+      "reason": "signal:mean_reversion",
+      "submitted_at": 1759352544.8894494,
+      "ticker": "ORCL"
+    },
+    "d563bbf6-f1bd-49f2-9041-81809e4582ff": {
+      "client_order_id": "bot:rs=signal_mean_reversi:t=V:ts=1759352660:496dc2",
+      "meta": {
+        "entry_hint": null
+      },
+      "reason": "signal:mean_reversion",
+      "submitted_at": 1759352660.18128,
+      "ticker": "V"
+    },
+    "e1dc87fc-b05c-4edb-99d8-e5922bc09d05": {
+      "client_order_id": "bot:rs=signal_mean_reversi:t=GOOGL:ts=1759352456:665bd9",
+      "meta": {
+        "entry_hint": null
+      },
+      "reason": "signal:mean_reversion",
+      "submitted_at": 1759352456.8899891,
+      "ticker": "GOOGL"
+    },
+    "fa51e75d-2d0d-4a13-91e7-ee60860e0e73": {
+      "client_order_id": "bot:rs=signal_mean_reversi:t=V:ts=1759361363:449fef",
+      "meta": {
+        "entry_hint": null
+      },
+      "reason": "signal:mean_reversion",
+      "submitted_at": 1759361363.2769194,
+      "ticker": "V"
+    },
+    "fc59f188-291b-4275-bbf1-3ced0182e3c4": {
+      "client_order_id": "bot:rs=signal_mean_reversi:t=GOOGL:ts=1759352435:31b7be",
+      "meta": {
+        "entry_hint": null
+      },
+      "reason": "signal:mean_reversion",
+      "submitted_at": 1759352435.2631562,
+      "ticker": "GOOGL"
+    }
+  },
+  "peak_equity": 98067.79,
+  "positions": {
+    "AMD": {
+      "entry_time": "2025-09-22T14:43:58.946156+00:00",
+      "order_id": "4f108e72-609b-48b9-8272-7ecfb7a8fc7d",
+      "qty": 31
     },
     "COP": {
       "entry_time": "2025-09-23T13:58:17.888684+00:00",
-      "qty": 52,
       "order_id": null,
+      "qty": 52,
+      "score": 0.034385349059392195,
+      "strategy": "rsi_sma"
+    },
+    "CRM": {
+      "entry_time": "2025-09-22T14:44:01.299252+00:00",
+      "order_id": "d7d4d7d2-95d1-4944-96e0-93f3581a3edb",
+      "qty": 20
+    },
+    "CVX": {
+      "entry_time": "2025-09-23T13:58:16.027181+00:00",
+      "order_id": null,
+      "qty": 31,
+      "score": 0.09656635871710943,
+      "strategy": "rsi_sma"
+    },
+    "GOOGL": {
+      "entry_time": "2025-10-02T01:03:05.145308+00:00",
+      "order_id": "ac6aa1a0-2dff-4279-a6fe-79e2b6c52872",
+      "qty": 40.0,
+      "score": 0.19581833173790322,
       "strategy": "rsi_sma",
-      "score": 0.034385349059392195
+      "strategy_trades": {
+        "rsi_sma": {
+          "entry_time": "2025-10-02T01:03:05.145308+00:00",
+          "order_id": "ac6aa1a0-2dff-4279-a6fe-79e2b6c52872",
+          "qty": 20.0,
+          "score": 0.19581833173790322
+        },
+        "sma": {
+          "entry_time": "2025-10-01T23:22:41.660632+00:00",
+          "order_id": "97b602ae-3fd9-40f8-a165-f19721220cec",
+          "qty": 20.0,
+          "score": 0.0
+        }
+      }
+    },
+    "MRNA": {
+      "entry_time": "2025-09-18T04:16:08.144846",
+      "order_id": "3f6e50ea-7bdf-49af-9f51-d629b49e5987",
+      "qty": 400
+    },
+    "NVDA": {
+      "entry_time": "2025-09-19T03:11:37.326561",
+      "order_id": "410ebd6b-2773-4d39-9764-77036f60c326",
+      "qty": 28
+    },
+    "ORCL": {
+      "entry_time": "2025-10-02T02:41:40.798534+00:00",
+      "order_id": "7f1904f9-9c3f-40de-88d7-035eae95e5c6",
+      "qty": 32.0,
+      "score": 0.05721455764871208,
+      "strategy": "rsi_sma",
+      "strategy_trades": {
+        "rsi_sma": {
+          "entry_time": "2025-10-02T02:41:40.798534+00:00",
+          "order_id": "7f1904f9-9c3f-40de-88d7-035eae95e5c6",
+          "qty": 16.0,
+          "score": 0.05721455764871208
+        },
+        "sma": {
+          "entry_time": "2025-10-01T23:23:20.793690+00:00",
+          "order_id": "3a568f68-d493-4b02-bbb5-8aa4068287ce",
+          "qty": 16.0,
+          "score": 0.0
+        }
+      }
+    },
+    "V": {
+      "entry_time": "2025-10-02T03:11:21.328859+00:00",
+      "order_id": "abb0fc1f-561c-450f-b8f4-d9a9d27dd5ec",
+      "qty": 28.0,
+      "score": 0.09540924218540782,
+      "strategy": "rsi_sma",
+      "strategy_trades": {
+        "rsi_sma": {
+          "entry_time": "2025-10-02T03:11:21.328859+00:00",
+          "order_id": "abb0fc1f-561c-450f-b8f4-d9a9d27dd5ec",
+          "qty": 14.0,
+          "score": 0.09540924218540782
+        },
+        "sma": {
+          "entry_time": "2025-10-01T23:29:21.655014+00:00",
+          "order_id": "fa51e75d-2d0d-4a13-91e7-ee60860e0e73",
+          "qty": 14.0,
+          "score": 0.0
+        }
+      }
     },
     "XLE": {
       "entry_time": "2025-09-23T13:58:41.529292+00:00",
-      "qty": 55,
       "order_id": null,
-      "strategy": "rsi_sma",
-      "score": 0.14495643733043415
+      "qty": 55,
+      "score": 0.14495643733043415,
+      "strategy": "rsi_sma"
+    },
+    "XOM": {
+      "entry_time": "2025-09-23T13:58:14.055142+00:00",
+      "order_id": null,
+      "qty": 43,
+      "score": 0.11083755330228896,
+      "strategy": "rsi_sma"
     }
   },
-  "peak_equity": null,
-  "last_scan": "2025-09-23T14:42:12.007817+00:00"
+  "rotation": {
+    "csp_candidates": 16,
+    "spread_candidates": 34
+  },
+  "strategy_state": {
+    "AAPL": {},
+    "AMD": {},
+    "AMZN": {},
+    "ASML": {},
+    "AVGO": {},
+    "BA": {},
+    "BAC": {},
+    "C": {},
+    "CAT": {},
+    "COP": {},
+    "CRM": {},
+    "CVX": {},
+    "GOOGL": {
+      "rsi_sma": {
+        "order_id": "ac6aa1a0-2dff-4279-a6fe-79e2b6c52872",
+        "position_active": true,
+        "price": 244.89999389648438,
+        "qty": 20.0,
+        "score": 0.19581833173790322,
+        "signal": "buy",
+        "time": "2025-10-02T01:03:05.145308+00:00"
+      },
+      "sma": {
+        "order_id": "97b602ae-3fd9-40f8-a165-f19721220cec",
+        "position_active": true,
+        "price": 244.89999389648438,
+        "qty": 20.0,
+        "score": 0.0,
+        "signal": "buy",
+        "time": "2025-10-01T23:22:41.660632+00:00"
+      }
+    },
+    "HD": {},
+    "IWM": {},
+    "JNJ": {},
+    "JPM": {},
+    "LMT": {},
+    "LOW": {},
+    "LRCX": {},
+    "MA": {},
+    "MCD": {},
+    "META": {},
+    "MRK": {},
+    "MRNA": {},
+    "MSFT": {},
+    "NFLX": {},
+    "NOW": {},
+    "NVDA": {},
+    "ORCL": {
+      "rsi_sma": {
+        "order_id": "7f1904f9-9c3f-40de-88d7-035eae95e5c6",
+        "position_active": true,
+        "price": 289.010009765625,
+        "qty": 16.0,
+        "score": 0.05721455764871208,
+        "signal": "buy",
+        "time": "2025-10-02T02:41:40.798534+00:00"
+      },
+      "sma": {
+        "order_id": "3a568f68-d493-4b02-bbb5-8aa4068287ce",
+        "position_active": true,
+        "price": 289.010009765625,
+        "qty": 16.0,
+        "score": 0.0,
+        "signal": "buy",
+        "time": "2025-10-01T23:23:20.793690+00:00"
+      }
+    },
+    "PFE": {},
+    "QCOM": {},
+    "QQQ": {},
+    "SBUX": {},
+    "SHOP": {},
+    "SPY": {},
+    "TSLA": {},
+    "V": {
+      "rsi_sma": {
+        "order_id": "abb0fc1f-561c-450f-b8f4-d9a9d27dd5ec",
+        "position_active": true,
+        "price": 347.8299865722656,
+        "qty": 14.0,
+        "score": 0.09540924218540782,
+        "signal": "buy",
+        "time": "2025-10-02T03:11:21.328859+00:00"
+      },
+      "sma": {
+        "order_id": "fa51e75d-2d0d-4a13-91e7-ee60860e0e73",
+        "position_active": true,
+        "price": 347.8299865722656,
+        "qty": 14.0,
+        "score": 0.0,
+        "signal": "buy",
+        "time": "2025-10-01T23:29:21.655014+00:00"
+      }
+    },
+    "XLE": {},
+    "XLF": {
+      "rsi_sma": {
+        "position_active": false,
+        "price": 53.38999938964844,
+        "qty": 0.0,
+        "score": 0.028008226804258355,
+        "signal": "sell",
+        "time": "2025-10-02T05:20:05.446598+00:00"
+      },
+      "sma": {
+        "position_active": false,
+        "price": 53.38999938964844,
+        "qty": 0.0,
+        "score": 0.0,
+        "signal": "sell",
+        "time": "2025-10-02T05:08:22.974245+00:00"
+      }
+    },
+    "XLK": {},
+    "XOM": {}
+  }
 }
