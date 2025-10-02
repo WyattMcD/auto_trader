@@ -176,7 +176,7 @@ from config import API_KEY, API_SECRET, IS_PAPER
 from executer import execute_intent
 from options.orders import OptionsTrader
 import yfinance as yf
-from risk import approve_csp_intent
+from risk import approve_csp_intent, capped_qty_to_buy
 from strategies.options_csp import pick_csp_intent, exit_rules_for_csp
 from config import API_KEY, API_SECRET, IS_PAPER, ENABLE_OPTIONS, OPTIONS_UNDERLYINGS
 from alpaca.trading.client import TradingClient
@@ -2401,6 +2401,36 @@ def run_scan_once():
                         continue
 
                     qty = calc_shares_for_risk(equity, available_funds, MAX_RISK_PCT, price, STOP_PCT)
+                    intended_qty = int(qty)
+
+                    if intended_qty > 0:
+                        capped_qty = capped_qty_to_buy(
+                            equity_trader,
+                            ticker,
+                            price,
+                            intended_qty,
+                            cap_pct=MAX_NOTIONAL_PCT,
+                        )
+                        if capped_qty <= 0:
+                            logging.info(
+                                "Skipping %s/%s buy — per-symbol exposure cap reached (intended=%s).",
+                                ticker,
+                                strategy_name,
+                                intended_qty,
+                            )
+                            continue
+                        if capped_qty < intended_qty:
+                            logging.info(
+                                "Reducing %s/%s size from %s to %s shares to respect the %.1f%% exposure cap.",
+                                ticker,
+                                strategy_name,
+                                intended_qty,
+                                capped_qty,
+                                MAX_NOTIONAL_PCT * 100.0,
+                            )
+                        qty = capped_qty
+                    else:
+                        qty = intended_qty
 
                     option_intent = None
                     if ENABLE_OPTIONS:
