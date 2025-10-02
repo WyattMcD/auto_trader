@@ -110,6 +110,39 @@ def pick_bull_put_spread(od, underlying: str) -> Optional[Dict[str, Any]]:
             if max_loss <= 0 or max_loss > SPREADS_MAX_RISK_PER_TRADE:
                 continue
 
+            entry_credit = round(net_credit * 100, 2)
+            tp_credit = round(entry_credit * 0.50, 2)
+            sl_credit = round(entry_credit * 2.0, 2)
+            meta = {
+                "strategy": "bull_put_spread",
+                "why": (
+                    f"Collect ≈${entry_credit:.2f} credit by shorting {short_strike}P/long {long_strike}P "
+                    f"({dte} DTE)."
+                ),
+                "thesis": (
+                    "Defined-risk bullish credit spread: short higher strike put with protection lower strike "
+                    "to harvest premium while capping downside."
+                ),
+                "underlying": underlying,
+                "expiry": exp.isoformat(),
+                "dte": dte,
+                "short_strike": short_strike,
+                "long_strike": long_strike,
+                "net_credit": entry_credit,
+                "max_loss": max_loss,
+                "plan": {
+                    "entry": (
+                        f"Sell {getattr(short_snap, 'symbol')} / buy {getattr(long_snap, 'symbol')} for ≈${entry_credit:.2f} credit"
+                    ),
+                    "take_profit": (
+                        f"Buy-to-close both legs if remaining credit falls to ${tp_credit:.2f} (≈50% of entry credit)"
+                    ),
+                    "stop_loss": (
+                        f"Buy-to-close if spread trades ≥${sl_credit:.2f} credit (≈200% of entry credit)"
+                    ),
+                },
+            }
+
             return {
                 "asset_class": "option_spread",
                 "strategy": "bull_put_spread",
@@ -143,7 +176,8 @@ def pick_bull_put_spread(od, underlying: str) -> Optional[Dict[str, Any]]:
                     "long_rel_spread": _rel_spread(long_snap),
                     "short_oi": getattr(short_snap, "open_interest", 0) or 0,
                     "long_oi": getattr(long_snap, "open_interest", 0) or 0,
-                }
+                },
+                "meta": meta,
             }
     return None
 
@@ -205,6 +239,38 @@ def pick_call_debit_spread(od, underlying: str) -> Optional[Dict[str, Any]]:
         if max_gain <= 0:
             continue
 
+        entry_debit = round(net_debit * 100, 2)
+        tp_gain = round(max_gain * 0.50, 2)
+        sl_debit = round(entry_debit * 0.50, 2)
+        meta = {
+            "strategy": "call_debit_spread",
+            "why": (
+                f"Pay ≈${entry_debit:.2f} to buy {long_strike}C / sell {short_strike}C ({dte} DTE) targeting upside breakout."
+            ),
+            "thesis": (
+                "Defined-risk bullish debit spread: long near-ATM call financed with short higher strike call "
+                "to capture upside with limited cost."
+            ),
+            "underlying": underlying,
+            "expiry": exp.isoformat(),
+            "dte": dte,
+            "long_strike": long_strike,
+            "short_strike": short_strike,
+            "net_debit": entry_debit,
+            "max_gain": max_gain,
+            "plan": {
+                "entry": (
+                    f"Buy {getattr(long_snap, 'symbol')} / sell {getattr(short_snap, 'symbol')} for ≈${entry_debit:.2f} debit"
+                ),
+                "take_profit": (
+                    f"Close spread once ~50% of max gain (≈${tp_gain:.2f}) is captured"
+                ),
+                "stop_loss": (
+                    f"Exit if spread value contracts to ${sl_debit:.2f} (≈50% of entry debit)"
+                ),
+            },
+        }
+
         return {
             "asset_class": "option_spread",
             "strategy": "call_debit_spread",
@@ -238,7 +304,8 @@ def pick_call_debit_spread(od, underlying: str) -> Optional[Dict[str, Any]]:
                 "short_rel_spread": _rel_spread(short_snap),
                 "long_oi": getattr(long_snap, "open_interest", 0) or 0,
                 "short_oi": getattr(short_snap, "open_interest", 0) or 0,
-            }
+            },
+            "meta": meta,
         }
 
     return None
