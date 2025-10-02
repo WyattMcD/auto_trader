@@ -186,6 +186,7 @@ from options.data import OptionsData
 from notifier import send_slack
 from strategies.spreads import pick_bull_put_spread, pick_call_debit_spread
 from strategies.spread_exits import bps_should_exit, call_debit_decision
+from options.router import RouterContext, plan_option_intent_for_signal
 from config import (
     SPREADS_MAX_CANDIDATES_PER_TICK, SPREADS_MAX_RISK_PER_TRADE, SPREADS_MAX_OPEN
 )
@@ -1605,6 +1606,10 @@ def _record_option_entry(intent):
             "plan": entry_meta.get("plan"),
             "take_profit_price": entry_meta.get("take_profit_price"),
             "stop_loss_price": entry_meta.get("stop_loss_price"),
+            "underlying": entry_meta.get("underlying"),
+            "strategy_ref": intent.get("strategy_ref") or entry_meta.get("strategy_ref"),
+            "symbol": intent.get("symbol"),
+            "meta": entry_meta,
         }
         return True
 
@@ -1664,6 +1669,8 @@ def _record_option_entry(intent):
         "meta": entry_meta,
         "plan": entry_meta.get("plan"),
         "thesis": entry_meta.get("thesis") or entry_meta.get("why"),
+        "underlying": entry_meta.get("underlying") or intent.get("underlying"),
+        "strategy_ref": intent.get("strategy_ref") or entry_meta.get("strategy_ref"),
     }
     return True
 
@@ -1685,6 +1692,36 @@ def _submit_option_intent(intent):
 def _looks_optionable(sym: str) -> bool:
     sym = (sym or "").strip().upper()
     return sym.isalnum() and 1 < len(sym) <= 5
+
+
+def _mark_strategy_ref_status(ref: dict | None, *, active: bool) -> None:
+    if not ref:
+        return
+
+    ticker = str(ref.get("ticker") or "").upper()
+    name = ref.get("strategy")
+    if not ticker or not name:
+        return
+
+    strategy_state = state.get("strategy_state")
+    if not strategy_state:
+        return
+
+    ticker_state = strategy_state.get(ticker)
+    if not ticker_state:
+        return
+
+    entry = ticker_state.get(name)
+    if not isinstance(entry, dict):
+        return
+
+    entry["position_active"] = bool(active)
+    if not active:
+        entry["option_closed_at"] = datetime.now(timezone.utc).isoformat()
+
+    ticker_state[name] = entry
+    strategy_state[ticker] = ticker_state
+    state["strategy_state"] = strategy_state
 
 
 def _count_open_short_puts():
@@ -1891,6 +1928,7 @@ def monitor_option_exits():
         }
         try:
             _execute_with_explanation(close_intent, equity_trader, opt_trader, stage="exit")
+            _mark_strategy_ref_status(meta.get("strategy_ref"), active=False)
             state["options_positions"].pop(sym, None)
             save_state()
             logging.info("Closed option %s via %s", sym, reason)
@@ -1964,6 +2002,7 @@ def monitor_option_exits():
         }
         try:
             _execute_with_explanation(exit_intent, equity_trader, opt_trader, stage="exit")
+            _mark_strategy_ref_status(meta.get("strategy_ref"), active=False)
             state["option_spreads"].pop(key, None)
             save_state()
             logging.info("Closed %s via %s", strategy, reason)
@@ -2052,6 +2091,18 @@ def run_scan_once():
         run_option_entry_cycle()
     except Exception:
         logging.exception("Option entry cycle failed")
+
+    options_account = None
+    open_short_puts = 0
+    if ENABLE_OPTIONS:
+        try:
+            options_account = equity_trader.get_account()
+        except Exception:
+            logging.exception("Failed to refresh account snapshot for options routing")
+            options_account = None
+        open_short_puts = _count_open_short_puts()
+
+    open_spreads = len(state.get("option_spreads", {}))
     # check account pause
     paused, drawdown = account_paused()
     if paused:
@@ -2350,6 +2401,57 @@ def run_scan_once():
                         continue
 
                     qty = calc_shares_for_risk(equity, available_funds, MAX_RISK_PCT, price, STOP_PCT)
+
+                    option_intent = None
+                    if ENABLE_OPTIONS:
+                        ctx = RouterContext(
+                            ticker=ticker,
+                            price=price,
+                            equity_qty=qty,
+                            state=state,
+                            open_spreads=open_spreads,
+                            open_short_puts=open_short_puts,
+                            account=options_account,
+                        )
+                        option_intent = plan_option_intent_for_signal(
+                            ctx,
+                            options_data=od,
+                            approve_csp=approve_csp_intent,
+                        )
+
+                    if option_intent:
+                        meta = option_intent.setdefault("meta", {})
+                        meta.setdefault("reason", "equity_signal_router")
+                        meta.setdefault("source_signal", strategy_name)
+                        meta["signal_price"] = price
+                        meta.setdefault("underlying", ticker)
+                        option_intent["strategy_ref"] = {"ticker": ticker, "strategy": strategy_name}
+
+                        if _submit_option_intent(option_intent):
+                            now_iso = now_utc.isoformat()
+                            ticker_strategy_state[strategy_name] = {
+                                "time": now_iso,
+                                "signal": "buy",
+                                "price": price,
+                                "score": score,
+                                "position_active": True,
+                                "via": "option",
+                                "option_asset_class": option_intent.get("asset_class"),
+                            }
+                            state.setdefault("last_signal", {})[ticker] = {
+                                "time": now_iso,
+                                "signal": "buy",
+                                "price": price,
+                                "strategy": strategy_name,
+                                "score": score,
+                            }
+                            save_state()
+                            if option_intent.get("asset_class") == "option_spread":
+                                open_spreads += 1
+                            elif option_intent.get("asset_class") == "option":
+                                open_short_puts += 1
+                            continue
+
                     if qty <= 0 or qty * price < 1.0:
                         logging.info("Sizing for %s/%s returned qty=%s (insufficient). Skipping.", ticker, strategy_name, qty)
                         send_slack(
@@ -2473,6 +2575,26 @@ def run_scan_once():
                             ticker,
                             strategy_name,
                         )
+                        continue
+
+                    if last_meta.get("via") == "option":
+                        now_iso = now_utc.isoformat()
+                        ticker_strategy_state[strategy_name] = {
+                            "time": now_iso,
+                            "signal": "sell",
+                            "price": price,
+                            "score": score,
+                            "position_active": False,
+                            "via": "option",
+                        }
+                        state.setdefault("last_signal", {})[ticker] = {
+                            "time": now_iso,
+                            "signal": "sell",
+                            "price": price,
+                            "strategy": strategy_name,
+                            "score": score,
+                        }
+                        save_state()
                         continue
 
                     pos = next((p for p in counted_positions if p.symbol == ticker), None)

@@ -59,6 +59,7 @@ def trader(monkeypatch, tmp_path):
         "positions": {},
         "options_positions": {},
         "option_spreads": {},
+        "strategy_state": {},
     }
 
     # Stubs for broker clients the lifecycle touches
@@ -135,7 +136,13 @@ def test_monitor_option_exits_closes_positions(monkeypatch, trader):
 
     # Seed one CSP and one spread position in state
     trader.state["options_positions"] = {
-        "SPY250118P00450000": {"entry_price": 1.00, "qty": 1, "strategy": "csp"}
+        "SPY250118P00450000": {
+            "entry_price": 1.00,
+            "qty": 1,
+            "strategy": "csp",
+            "strategy_ref": {"ticker": "SPY", "strategy": "csp"},
+            "underlying": "SPY",
+        }
     }
     trader.state["option_spreads"] = {
         "SPY250118P00440000|SPY250118P00450000": {
@@ -145,6 +152,14 @@ def test_monitor_option_exits_closes_positions(monkeypatch, trader):
                 {"symbol": "SPY250118P00440000", "side": "buy", "qty": 1},
             ],
             "entry_credit": 1.20,
+            "strategy_ref": {"ticker": "SPY", "strategy": "bps"},
+        }
+    }
+
+    trader.state["strategy_state"] = {
+        "SPY": {
+            "csp": {"position_active": True, "via": "option"},
+            "bps": {"position_active": True, "via": "option"},
         }
     }
 
@@ -168,3 +183,5 @@ def test_monitor_option_exits_closes_positions(monkeypatch, trader):
     assert submitted[1]["asset_class"] == "option_spread"
     assert trader.state["options_positions"] == {}
     assert trader.state["option_spreads"] == {}
+    assert trader.state["strategy_state"]["SPY"]["csp"]["position_active"] is False
+    assert trader.state["strategy_state"]["SPY"]["bps"]["position_active"] is False
