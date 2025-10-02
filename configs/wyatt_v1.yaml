@@ -1,0 +1,66 @@
+metadata:
+  author: Wyatt
+  version: 1.0
+  intent: >-
+    Unified swing/options income engine covering trend upgrades, mean reversion,
+    Donchian breakouts, overnight index gaps, and event-driven (earnings) plays.
+
+watchlists:
+  core_equities:
+    - AAPL
+    - MSFT
+    - NVDA
+    - AMZN
+    - META
+    - GOOGL
+    - TSLA
+    - NFLX
+  options:
+    - SPY
+    - QQQ
+    - IWM
+    - AAPL
+    - MSFT
+  etfs:
+    - SPY
+    - QQQ
+    - IWM
+    - DIA
+  turtle:
+    - AAPL
+    - MSFT
+    - NVDA
+    - CAT
+    - BA
+    - LMT
+
+risk:
+  sizing:
+    equity_risk_pct: 0.05
+    options_notional_cap: 0.25
+    max_positions: 25
+  max_drawdown_pct: 0.18
+  circuit_breaker_down_pct: 0.08
+  circuit_breaker_up_pct: 0.08
+
+strategy_toggles:
+  - name: Natural Trend Upgrade
+    code: NTU
+    enabled: true
+  - name: Mean Reversion Fade
+    code: MRF
+    enabled: true
+  - name: Donchian Breakout
+    code: DBO
+    enabled: true
+  - name: Overnight Gap Edge
+    code: ONG
+    enabled: true
+  - name: Earnings Momentum
+    code: EMO
+    enabled: true
+
+sizing_policy:
+  equities_slot_pct: 0.05
+  options_spread_notional: 0.25
+  overnight_index_units: 1
