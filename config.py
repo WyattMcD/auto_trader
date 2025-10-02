@@ -60,7 +60,7 @@ OPTIONS_MAX_CANDIDATES_PER_TICK = 8  # how many tickers from watchlist to scan e
 OPTIONS_ROUTER_MIN_SHARE_QTY = int(os.getenv("OPTIONS_ROUTER_MIN_SHARE_QTY", "5"))
 OPTIONS_ROUTER_MAX_SHARE_PRICE = float(os.getenv("OPTIONS_ROUTER_MAX_SHARE_PRICE", "175"))
 OPTIONS_ROUTER_ALLOW_SPREADS = os.getenv("OPTIONS_ROUTER_ALLOW_SPREADS", "true").lower() in ("1", "true", "yes")
-OPTIONS_ROUTER_ALLOW_CSP = os.getenv("OPTIONS_ROUTER_ALLOW_CSP", "false").lower() in ("1", "true", "yes")
+OPTIONS_ROUTER_ALLOW_CSP = os.getenv("OPTIONS_ROUTER_ALLOW_CSP", "true").lower() in ("1", "true", "yes")
 
 # --- Small-account options spread settings ---
 SPREADS_MIN_DTE = 7
