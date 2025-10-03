@@ -66,6 +66,7 @@ def pick_bull_put_spread(od, underlying: str) -> Optional[Dict[str, Any]]:
 
     # Index by (expiry -> puts sorted by strike)
     puts_by_exp: Dict[date, List[Tuple[float, Any]]] = {}
+    short_candidates: Dict[date, List[Tuple[float, Any]]] = {}
 
     for s in snaps:
         sym = getattr(s, "symbol", "")
@@ -78,18 +79,25 @@ def pick_bull_put_spread(od, underlying: str) -> Optional[Dict[str, Any]]:
         if not _ok_liquidity(s):
             continue
         # Candidate short put must have delta in range
-        if not _delta_ok(s):
-            continue
         puts_by_exp.setdefault(exp, []).append((strike, s))
 
-    if not puts_by_exp:
+        if _delta_ok(s):
+            short_candidates.setdefault(exp, []).append((strike, s))
+
+    if not short_candidates:
         return None
 
     # Try nearest expiry first
-    for exp in sorted(puts_by_exp.keys(), key=lambda e: _dte(e)):
-        puts = sorted(puts_by_exp[exp], key=lambda t: t[0])  # by strike
+    for exp in sorted(short_candidates.keys(), key=lambda e: _dte(e)):
+        puts = sorted(puts_by_exp.get(exp, []), key=lambda t: t[0])  # by strike
+        if not puts:
+            continue
+        shorts = sorted(short_candidates.get(exp, []), key=lambda t: t[0])
+        if not shorts:
+            continue
+        dte = _dte(exp)
         # For each short put candidate, try to find a lower strike long put
-        for short_strike, short_snap in puts:
+        for short_strike, short_snap in shorts:
             # pick a protection leg 1-3 strikes lower with decent liquidity
             # We'll walk the list for the next lower strike
             lower_candidates = [p for p in puts if p[0] < short_strike]
